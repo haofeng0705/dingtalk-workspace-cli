@@ -1,0 +1,150 @@
+name: PR Advisory — Aone Result
+
+on:
+  repository_dispatch:
+    types: [aone-cli-to-mcp-completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: aone-pr-result-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate result and update the current revision comment
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const marker = '<!-- aone-cli-to-mcp-report -->';
+            const payload = context.payload.client_payload || {};
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const expectedRepository = `${owner}/${repo}`;
+            const pullNumber = Number(payload.pr_number);
+            const headSha = String(payload.head_sha || '');
+            const runId = String(payload.run_id || '');
+            const result = String(payload.evaluation_result || '').toLowerCase();
+            const allowedResults = new Set(['passed', 'failed', 'error']);
+
+            if (payload.repository !== expectedRepository) {
+              throw new Error(`Result repository does not match ${expectedRepository}.`);
+            }
+            if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) {
+              throw new Error('Result is missing a valid pull request number.');
+            }
+            if (!/^[0-9a-f]{40}$/.test(headSha)) {
+              throw new Error('Result is missing a valid head SHA.');
+            }
+            if (!/^\d+$/.test(runId)) {
+              throw new Error('Result is missing a numeric Aone run id.');
+            }
+            if (!allowedResults.has(result)) {
+              throw new Error(`Unsupported evaluation result: ${result || '<empty>'}.`);
+            }
+
+            const count = name => {
+              const value = Number(payload[name]);
+              if (!Number.isSafeInteger(value) || value < 0) {
+                throw new Error(`Result field ${name} must be a non-negative integer.`);
+              }
+              return value;
+            };
+            const total = count('total');
+            const passed = count('passed');
+            const failed = count('failed');
+            const errors = count('errors');
+            const skipped = count('skipped');
+            if (passed + failed + errors + skipped !== total) {
+              throw new Error('Result counts do not add up to total.');
+            }
+
+            const reportURL = String(payload.report_url || '');
+            if (reportURL) {
+              const parsedURL = new URL(reportURL);
+              if (parsedURL.protocol !== 'https:') {
+                throw new Error('Aone report URL must use HTTPS.');
+              }
+            }
+
+            const {data: pull} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+            if (pull.state !== 'open') {
+              core.notice(`PR #${pullNumber} is no longer open; result ignored.`);
+              return;
+            }
+            if (pull.head.sha !== headSha) {
+              core.notice(
+                `Aone result belongs to stale ${headSha}; current PR head is ${pull.head.sha}.`,
+              );
+              return;
+            }
+
+            const labels = {
+              passed: '✅ 通过',
+              failed: '❌ 存在失败',
+              error: '⚠️ 评测基础设施异常',
+            };
+            const failureTypes = {
+              product_regression: '代码或产品回归',
+              test_assertion: '测试断言问题',
+              fixture_or_data: 'Fixture 或测试数据问题',
+              auth_or_credential: '认证或凭据问题',
+              network_or_platform: '网络或平台问题',
+              pipeline_infrastructure: 'Pipeline 基础设施问题',
+              none: '无',
+            };
+            const failureTypeKey = String(payload.failure_type || 'none');
+            const failureType = failureTypes[failureTypeKey] || '未分类';
+            const reportLine = reportURL
+              ? `- [查看完整 Aone 报告](${reportURL})`
+              : '- 完整报告链接：未提供';
+            const body = [
+              marker,
+              '## Aone CLI → MCP 评测',
+              '',
+              '> 本评测仅供 Reviewer 参考，不阻塞 PR 合并。',
+              '',
+              `- 对应提交：\`${headSha.slice(0, 12)}\``,
+              `- Aone 运行：\`${runId}\``,
+              `- 评测结论：${labels[result]}`,
+              `- 用例统计：通过 ${passed} / 失败 ${failed} / 错误 ${errors} / 跳过 ${skipped} / 总计 ${total}`,
+              `- 失败分类：${failureType}`,
+              reportLine,
+              '',
+              '请 Reviewer 结合失败分类和完整报告判断是否影响本次变更。',
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.includes(marker),
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                body,
+              });
+            }

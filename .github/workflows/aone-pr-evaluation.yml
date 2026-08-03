@@ -1,0 +1,223 @@
+name: PR Advisory — Aone CLI-MCP
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+# This workflow deliberately runs from the protected base revision. It may
+# inspect PR metadata and trigger Aone, but it must never execute PR code.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: aone-pr-advisory-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trigger:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Authorize the exact pull request revision
+        id: authorize
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const eventPull = context.payload.pull_request;
+            const pullNumber = eventPull.number;
+            const expectedBase = eventPull.base.sha;
+            const expectedHead = eventPull.head.sha;
+            const approvalLabel = 'aone-ci-approved';
+            const trustedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+            async function readCurrent(phase) {
+              const {data: pull} = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber,
+              });
+              if (
+                pull.state !== 'open' ||
+                pull.draft ||
+                pull.base.ref !== 'main' ||
+                pull.base.sha !== expectedBase ||
+                pull.head.sha !== expectedHead
+              ) {
+                throw new Error(
+                  `PR #${pullNumber} changed during ${phase}; expected ` +
+                  `${expectedBase}/${expectedHead}, got ` +
+                  `${pull.base.sha}/${pull.head.sha}`,
+                );
+              }
+              return pull;
+            }
+
+            const pull = await readCurrent('authorization');
+            const labels = new Set((pull.labels || []).map(label => label.name));
+            if (!pull.head.repo?.full_name) {
+              throw new Error(`PR #${pullNumber} no longer has an accessible head repository.`);
+            }
+            const sameRepository = pull.head.repo?.full_name === `${owner}/${repo}`;
+            const trustedSameRepository =
+              sameRepository && trustedAssociations.has(pull.author_association);
+            const explicitlyApproved = labels.has(approvalLabel);
+            const relevantLabelEvent =
+              context.payload.action !== 'labeled' ||
+              context.payload.label?.name === approvalLabel;
+
+            if (!relevantLabelEvent) {
+              core.info('Ignoring an unrelated label event.');
+              core.setOutput('should_trigger', 'false');
+              return;
+            }
+            if (
+              context.payload.action === 'synchronize' &&
+              !trustedSameRepository &&
+              explicitlyApproved
+            ) {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                name: approvalLabel,
+              });
+              core.notice(
+                `PR #${pullNumber} received a new external revision. ` +
+                `${approvalLabel} was removed and must be granted again for ${expectedHead}.`,
+              );
+              core.setOutput('should_trigger', 'false');
+              return;
+            }
+            if (!trustedSameRepository && !explicitlyApproved) {
+              core.notice(
+                `PR #${pullNumber} is not eligible for internal Aone credentials. ` +
+                `A maintainer may add ${approvalLabel} after reviewing the revision.`,
+              );
+              core.setOutput('should_trigger', 'false');
+              return;
+            }
+
+            await readCurrent('post-authorization verification');
+            core.setOutput('should_trigger', 'true');
+            core.setOutput('pr_number', String(pullNumber));
+            core.setOutput('base_sha', expectedBase);
+            core.setOutput('head_sha', expectedHead);
+            core.setOutput('repository', `${owner}/${repo}`);
+            core.setOutput('head_repository', pull.head.repo.full_name);
+            core.setOutput(
+              'correlation_id',
+              `${owner}/${repo}/pull/${pullNumber}/${expectedHead}`,
+            );
+
+      - name: Check Aone trigger configuration
+        id: config
+        if: steps.authorize.outputs.should_trigger == 'true'
+        env:
+          AONE_TRIGGER_URL: ${{ secrets.AONE_TRIGGER_URL }}
+          AONE_PRIVATE_TOKEN: ${{ secrets.AONE_PRIVATE_TOKEN }}
+        run: |
+          if [ -n "$AONE_TRIGGER_URL" ] && [ -n "$AONE_PRIVATE_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the trusted base revision
+        if: steps.authorize.outputs.should_trigger == 'true' && steps.config.outputs.configured == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.authorize.outputs.base_sha }}
+          persist-credentials: false
+
+      - name: Trigger Aone evaluation
+        id: aone
+        if: steps.authorize.outputs.should_trigger == 'true' && steps.config.outputs.configured == 'true'
+        continue-on-error: true
+        env:
+          AONE_TRIGGER_URL: ${{ secrets.AONE_TRIGGER_URL }}
+          AONE_PRIVATE_TOKEN: ${{ secrets.AONE_PRIVATE_TOKEN }}
+          GITHUB_REPOSITORY: ${{ steps.authorize.outputs.repository }}
+          GITHUB_PR_NUMBER: ${{ steps.authorize.outputs.pr_number }}
+          GITHUB_BASE_SHA: ${{ steps.authorize.outputs.base_sha }}
+          GITHUB_HEAD_SHA: ${{ steps.authorize.outputs.head_sha }}
+          GITHUB_HEAD_REPOSITORY: ${{ steps.authorize.outputs.head_repository }}
+          CORRELATION_ID: ${{ steps.authorize.outputs.correlation_id }}
+        run: ./scripts/ci/trigger-aone-pr-evaluation.sh
+
+      - name: Publish advisory status comment
+        if: always() && steps.authorize.outputs.should_trigger == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          CONFIGURED: ${{ steps.config.outputs.configured }}
+          TRIGGER_OUTCOME: ${{ steps.aone.outcome }}
+          AONE_RUN_ID: ${{ steps.aone.outputs.run_id }}
+          PR_NUMBER: ${{ steps.authorize.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.authorize.outputs.head_sha }}
+        with:
+          script: |
+            const marker = '<!-- aone-cli-to-mcp-report -->';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullNumber = Number(process.env.PR_NUMBER);
+            const shortSha = process.env.HEAD_SHA.slice(0, 12);
+            let status;
+            if (process.env.CONFIGURED !== 'true') {
+              status = '⚠️ Fork 尚未配置 `AONE_TRIGGER_URL` / `AONE_PRIVATE_TOKEN`。';
+            } else if (process.env.TRIGGER_OUTCOME !== 'success') {
+              status = '⚠️ Aone 触发失败，请检查本次 GitHub Workflow 日志。';
+            } else {
+              status = `⏳ Aone 评测已触发，运行 ID：\`${process.env.AONE_RUN_ID}\`。`;
+            }
+            const body = [
+              marker,
+              '## Aone CLI → MCP 评测',
+              '',
+              '> 本评测仅供 Reviewer 参考，不阻塞 PR 合并。',
+              '',
+              `- 对应提交：\`${shortSha}\``,
+              `- 当前状态：${status}`,
+              '',
+              'Aone 完成后会更新此评论。',
+            ].join('\n');
+            const {data: currentPull} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+            if (currentPull.state !== 'open' || currentPull.head.sha !== process.env.HEAD_SHA) {
+              core.notice(
+                `PR #${pullNumber} moved away from ${process.env.HEAD_SHA}; ` +
+                'stale trigger status ignored.',
+              );
+              return;
+            }
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.includes(marker),
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                body,
+              });
+            }
