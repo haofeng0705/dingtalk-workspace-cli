@@ -57,6 +57,13 @@ jobs:
               return pull;
             }
 
+            function setCommentContext(pull, advisoryState) {
+              core.setOutput('should_comment', 'true');
+              core.setOutput('advisory_state', advisoryState);
+              core.setOutput('pr_number', String(pull.number));
+              core.setOutput('head_sha', pull.head.sha);
+            }
+
             const pull = await readCurrent('authorization');
             const labels = new Set((pull.labels || []).map(label => label.name));
             if (!pull.head.repo?.full_name) {
@@ -73,6 +80,7 @@ jobs:
             if (!relevantLabelEvent) {
               core.info('Ignoring an unrelated label event.');
               core.setOutput('should_trigger', 'false');
+              core.setOutput('should_comment', 'false');
               return;
             }
             if (
@@ -90,6 +98,7 @@ jobs:
                 `PR #${pullNumber} received a new external revision. ` +
                 `${approvalLabel} was removed and must be granted again for ${expectedHead}.`,
               );
+              setCommentContext(pull, 'approval_required');
               core.setOutput('should_trigger', 'false');
               return;
             }
@@ -98,15 +107,15 @@ jobs:
                 `PR #${pullNumber} is not eligible for internal Aone credentials. ` +
                 `A maintainer may add ${approvalLabel} after reviewing the revision.`,
               );
+              setCommentContext(pull, 'approval_required');
               core.setOutput('should_trigger', 'false');
               return;
             }
 
             await readCurrent('post-authorization verification');
+            setCommentContext(pull, 'trigger');
             core.setOutput('should_trigger', 'true');
-            core.setOutput('pr_number', String(pullNumber));
             core.setOutput('base_sha', expectedBase);
-            core.setOutput('head_sha', expectedHead);
             core.setOutput('repository', `${owner}/${repo}`);
             core.setOutput('head_repository', pull.head.repo.full_name);
             core.setOutput(
@@ -150,9 +159,10 @@ jobs:
         run: ./scripts/ci/trigger-aone-pr-evaluation.sh
 
       - name: Publish advisory status comment
-        if: always() && steps.authorize.outputs.should_trigger == 'true'
+        if: always() && steps.authorize.outputs.should_comment == 'true'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
+          ADVISORY_STATE: ${{ steps.authorize.outputs.advisory_state }}
           CONFIGURED: ${{ steps.config.outputs.configured }}
           TRIGGER_OUTCOME: ${{ steps.aone.outcome }}
           AONE_RUN_ID: ${{ steps.aone.outputs.run_id }}
@@ -166,7 +176,13 @@ jobs:
             const pullNumber = Number(process.env.PR_NUMBER);
             const shortSha = process.env.HEAD_SHA.slice(0, 12);
             let status;
-            if (process.env.CONFIGURED !== 'true') {
+            let nextStep = 'Aone 完成后会更新此评论。';
+            if (process.env.ADVISORY_STATE === 'approval_required') {
+              status =
+                '⚠️ 当前外部提交尚未获准使用 Aone 凭据；此前 SHA 的评测结论已失效。';
+              nextStep =
+                '维护者审核当前 SHA 后，可添加 `aone-ci-approved` 标签触发评测。';
+            } else if (process.env.CONFIGURED !== 'true') {
               status = '⚠️ Fork 尚未配置 `AONE_TRIGGER_URL` / `AONE_PRIVATE_TOKEN`。';
             } else if (process.env.TRIGGER_OUTCOME !== 'success') {
               status = '⚠️ Aone 触发失败，请检查本次 GitHub Workflow 日志。';
@@ -182,7 +198,7 @@ jobs:
               `- 对应提交：\`${shortSha}\``,
               `- 当前状态：${status}`,
               '',
-              'Aone 完成后会更新此评论。',
+              nextStep,
             ].join('\n');
             const {data: currentPull} = await github.rest.pulls.get({
               owner,
