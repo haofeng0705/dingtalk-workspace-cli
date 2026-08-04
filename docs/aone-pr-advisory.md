@@ -29,6 +29,10 @@ Workflow 调用受信任的 Aone `main` Pipeline，并传入以下参数：
 - `GITHUB_HEAD_REPOSITORY`
 - `CORRELATION_ID`
 
+### Fork 的兼容性基线
+
+Fork 的远端仓库可能没有复制官方稳定版 tag，导致现有 `Interface Integrity` 无法选择兼容性基线。CI 仅在 `github.repository` 不是官方仓库时，通过公开 HTTPS 将官方 `v*` tag 读取到一次性 Runner 的本地 Git 仓库；官方仓库路径不会执行该 fetch，整个流程不包含 `git push`，也不会修改 fork 或官方仓库的远端 tag。若本地存在同名但指向不同提交的 tag，fetch 会失败并停止，不会强制覆盖。
+
 ## Aone Pipeline 要求
 
 现有“开源 CLI 功能测试”流水线评测的是已发布 beta 包，不会检出 GitHub PR 源码，因此不能直接作为本方案的触发目标。建议在同一个 Aone 项目中新建专用 PR Pipeline，复用现有 Runner、凭据刷新、测试脚本、报告与制品能力，但将代码输入改为经过 SHA 校验的 GitHub PR revision。专用 Pipeline 的 Token、回传凭据和机器人地址必须全部使用 Aone Secret，不得沿用 YAML 中的明文或默认值。

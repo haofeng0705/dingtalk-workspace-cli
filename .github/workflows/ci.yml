@@ -1344,6 +1344,8 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          OFFICIAL_REPOSITORY: DingTalk-Real-AI/dingtalk-workspace-cli
         run: |
           set -eu
           base_ref="$PUSH_BEFORE_SHA"
@@ -1354,6 +1356,11 @@ jobs:
             base_ref="$(git rev-parse HEAD^)"
           fi
           git rev-parse --verify "${base_ref}^{commit}" >/dev/null
+          if [ "$CURRENT_REPOSITORY" != "$OFFICIAL_REPOSITORY" ]; then
+            git fetch --no-tags --quiet \
+              "https://github.com/${OFFICIAL_REPOSITORY}.git" \
+              'refs/tags/v*:refs/tags/v*'
+          fi
           stable_ref="$(git tag --merged "$base_ref" --list 'v[0-9]*' --sort=-version:refname | awk 'index($0, "-") == 0 { print; exit }')"
           if [ -z "$stable_ref" ]; then
             echo "No stable release tag is reachable from compatibility base $base_ref" >&2

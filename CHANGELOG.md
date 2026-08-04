@@ -8,7 +8,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/) and th
 
 ### Added
 
-- **Non-blocking Aone PR advisory** — allows a trusted base-branch GitHub Workflow to trigger a dedicated Aone evaluation for an exact PR revision and publish the SHA-validated result as a sticky PR Comment for Reviewer judgement, without adding a Required Check or blocking merge.
+- **Non-blocking Aone PR advisory** — allows a trusted base-branch GitHub Workflow to trigger a dedicated Aone evaluation for an exact PR revision and publish the SHA-validated result as a sticky PR Comment for Reviewer judgement, without adding a Required Check or blocking merge. Fork CI can read official stable tags into its ephemeral Runner when resolving the interface-compatibility baseline, without pushing or force-updating remote tags.
 - **Aitable workflow editing reference** — adds `dws aitable workflow edit-example`, a parameter-free read command that returns the service-provided workflow editing documentation and `workflow-dsl/v1` examples through `aitable/edit_workflow_example`.
 
 ### Fixed

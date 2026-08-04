@@ -191,6 +191,43 @@ func TestAonePRAdvisoryWorkflowSecurityContract(t *testing.T) {
 	}
 }
 
+func TestForkInterfaceIntegrityFetchesOfficialTagsReadOnly(t *testing.T) {
+	t.Parallel()
+
+	root := repositoryRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	start := strings.Index(workflow, "- name: Resolve authoritative compatibility merge-base")
+	if start < 0 {
+		t.Fatal("cannot isolate Interface Integrity compatibility-base step")
+	}
+	end := strings.Index(workflow[start:], "- name: Check historical commands and help compatibility")
+	if end < 0 {
+		t.Fatal("cannot isolate Interface Integrity compatibility-base step")
+	}
+	step := workflow[start : start+end]
+	for _, want := range []string{
+		"CURRENT_REPOSITORY: ${{ github.repository }}",
+		"OFFICIAL_REPOSITORY: DingTalk-Real-AI/dingtalk-workspace-cli",
+		`if [ "$CURRENT_REPOSITORY" != "$OFFICIAL_REPOSITORY" ]; then`,
+		`https://github.com/${OFFICIAL_REPOSITORY}.git`,
+		`'refs/tags/v*:refs/tags/v*'`,
+	} {
+		if !strings.Contains(step, want) {
+			t.Errorf("CI workflow missing fork tag bootstrap marker %q", want)
+		}
+	}
+	if strings.Contains(step, "git push") {
+		t.Fatal("fork tag bootstrap must not push tags")
+	}
+	if strings.Contains(step, "+refs/tags") {
+		t.Fatal("fork tag bootstrap must fail closed instead of force-updating a colliding tag")
+	}
+}
+
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
