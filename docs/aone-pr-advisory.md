@@ -7,7 +7,7 @@
 - `pull_request_target` 只执行默认分支中受信任的 Workflow 和脚本。
 - Workflow 不检出或执行 PR 代码，只把经过校验的 PR 元数据交给 Aone。
 - 同仓库且作者关系为 `OWNER`、`MEMBER` 或 `COLLABORATOR` 的 PR 自动触发。
-- 其他 PR 必须由维护者针对当前 SHA 添加 `aone-ci-approved` 标签；外部 PR 新推送后 Workflow 会移除旧标签，要求重新批准。
+- 其他 PR 必须由维护者针对当前 SHA 添加 `aone-ci-approved` 标签；外部 PR 新推送后 Workflow 会移除旧标签、把粘性 Comment 更新为“当前 SHA 待批准”，使此前 SHA 的结论立即失效。
 - Aone Pipeline 必须固定使用其受信任的 `main` 配置，再根据参数显式获取 GitHub PR SHA；不得加载 PR 修改后的 Pipeline 定义。
 - Aone 回传结果仅在 `head_sha` 仍等于 PR 当前 head 时更新 Comment。
 
