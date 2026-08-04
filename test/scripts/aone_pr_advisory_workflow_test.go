@@ -131,6 +131,7 @@ func TestAonePRAdvisoryWorkflowSecurityContract(t *testing.T) {
 	for _, want := range []string{
 		"pull_request_target:",
 		"types: [opened, synchronize, reopened, ready_for_review, labeled]",
+		"group: aone-pr-advisory-${{ github.event.pull_request.number }}",
 		"pull.head.sha !== expectedHead",
 		"pull.base.sha !== expectedBase",
 		"pull.head.repo?.full_name === `${owner}/${repo}`",
@@ -169,8 +170,20 @@ func TestAonePRAdvisoryWorkflowSecurityContract(t *testing.T) {
 	for _, want := range []string{
 		"repository_dispatch:",
 		"types: [aone-cli-to-mcp-completed]",
+		"group: aone-pr-advisory-${{ github.event.client_payload.pr_number }}",
+		"payload.schema_version !== 1",
 		"payload.repository !== expectedRepository",
+		"const counts = payload.counts;",
+		"countKeys.length !== countFields.length",
+		"typeof value !== 'number'",
+		"result === 'passed' && (failed !== 0 || errors !== 0)",
+		"Object.hasOwn(failureTypes, failureTypeKey)",
+		"reportURL.length > 2048",
+		"parsedURL.username || parsedURL.password",
 		"pull.head.sha !== headSha",
+		"isCurrentRevision('initial result validation')",
+		"isCurrentRevision('comment write')",
+		"完整报告：<${reportHref}>",
 		"comment.body?.includes(marker)",
 		"github.rest.issues.updateComment",
 		"github.rest.issues.createComment",
@@ -184,10 +197,79 @@ func TestAonePRAdvisoryWorkflowSecurityContract(t *testing.T) {
 		"actions/checkout",
 		"statuses: write",
 		"checks: write",
+		"Number(payload[name])",
+		"[查看完整 Aone 报告](${reportURL})",
 	} {
 		if strings.Contains(result, forbidden) {
 			t.Errorf("result workflow must not contain %q", forbidden)
 		}
+	}
+	if got := strings.Count(result, "await isCurrentRevision("); got != 2 {
+		t.Errorf("result workflow current-revision checks = %d, want 2", got)
+	}
+}
+
+func TestAoneRepositoryDispatchPayloadFitsGitHubLimit(t *testing.T) {
+	t.Parallel()
+
+	root := repositoryRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "docs", "aone-pr-advisory.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, block := range strings.Split(string(data), "```json")[1:] {
+		jsonText, _, ok := strings.Cut(block, "```")
+		if !ok {
+			continue
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(jsonText), &envelope); err != nil {
+			continue
+		}
+		if envelope["event_type"] != "aone-cli-to-mcp-completed" {
+			continue
+		}
+		found = true
+
+		payload, ok := envelope["client_payload"].(map[string]any)
+		if !ok {
+			t.Fatal("repository_dispatch example is missing client_payload object")
+		}
+		if len(payload) > 10 {
+			t.Fatalf("client_payload has %d top-level properties; GitHub allows at most 10", len(payload))
+		}
+		if payload["schema_version"] != float64(1) {
+			t.Fatalf("schema_version = %#v, want 1", payload["schema_version"])
+		}
+		for _, name := range []string{"total", "passed", "failed", "errors", "skipped"} {
+			if _, exists := payload[name]; exists {
+				t.Errorf("count %q must be nested under counts", name)
+			}
+		}
+
+		counts, ok := payload["counts"].(map[string]any)
+		if !ok {
+			t.Fatal("client_payload is missing counts object")
+		}
+		if len(counts) != 5 {
+			t.Fatalf("counts has %d fields, want exactly 5", len(counts))
+		}
+		values := make(map[string]int, len(counts))
+		for _, name := range []string{"total", "passed", "failed", "errors", "skipped"} {
+			value, ok := counts[name].(float64)
+			if !ok || value < 0 || value != float64(int(value)) {
+				t.Fatalf("counts.%s = %#v, want non-negative integer", name, counts[name])
+			}
+			values[name] = int(value)
+		}
+		if values["passed"]+values["failed"]+values["errors"]+values["skipped"] != values["total"] {
+			t.Fatalf("example counts do not add up: %#v", values)
+		}
+	}
+	if !found {
+		t.Fatal("cannot find repository_dispatch JSON example")
 	}
 }
 

@@ -53,17 +53,19 @@ test "$(git rev-parse HEAD)" = "$GITHUB_HEAD_SHA"
 
 ```json
 {
+  "schema_version": 1,
   "repository": "haofeng0705/dingtalk-workspace-cli",
   "pr_number": 17,
   "head_sha": "0123456789abcdef0123456789abcdef01234567",
   "run_id": "123456",
-  "pipeline_status": "success",
   "evaluation_result": "failed",
-  "total": 331,
-  "passed": 310,
-  "failed": 8,
-  "errors": 3,
-  "skipped": 10,
+  "counts": {
+    "total": 331,
+    "passed": 310,
+    "failed": 8,
+    "errors": 3,
+    "skipped": 10
+  },
   "failure_type": "product_regression",
   "report_url": "https://aone.example/report/123456"
 }
@@ -79,6 +81,8 @@ test "$(git rev-parse HEAD)" = "$GITHUB_HEAD_SHA"
 - `pipeline_infrastructure`
 - `none`
 
+`report_url` 可留空；非空时必须是最长 2048 字符、不含用户名或密码的 HTTPS URL。Workflow 会先规范化 URL，再以 Markdown autolink 写入 Comment。
+
 ## 回传 GitHub
 
 Aone 使用 GitHub App installation token，或灰度阶段使用单仓库 fine-grained token，触发：
@@ -87,23 +91,25 @@ Aone 使用 GitHub App installation token，或灰度阶段使用单仓库 fine-
 POST /repos/haofeng0705/dingtalk-workspace-cli/dispatches
 ```
 
-请求中的 `event_type` 固定为 `aone-cli-to-mcp-completed`，上面的结构化结果作为 `client_payload`：
+请求中的 `event_type` 固定为 `aone-cli-to-mcp-completed`，上面的结构化结果作为 `client_payload`。GitHub 限制 `client_payload` 最多包含 10 个顶层属性，因此五个统计字段必须放在 `counts` 对象中；不得展开到顶层：
 
 ```json
 {
   "event_type": "aone-cli-to-mcp-completed",
   "client_payload": {
+    "schema_version": 1,
     "repository": "haofeng0705/dingtalk-workspace-cli",
     "pr_number": 17,
     "head_sha": "0123456789abcdef0123456789abcdef01234567",
     "run_id": "123456",
-    "pipeline_status": "success",
     "evaluation_result": "passed",
-    "total": 10,
-    "passed": 10,
-    "failed": 0,
-    "errors": 0,
-    "skipped": 0,
+    "counts": {
+      "total": 10,
+      "passed": 10,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
     "failure_type": "none",
     "report_url": "https://aone.example/report/123456"
   }

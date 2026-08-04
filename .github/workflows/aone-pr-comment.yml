@@ -9,7 +9,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: aone-pr-result-${{ github.event.client_payload.pr_number }}
+  group: aone-pr-advisory-${{ github.event.client_payload.pr_number }}
   cancel-in-progress: false
 
 jobs:
@@ -26,10 +26,33 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const expectedRepository = `${owner}/${repo}`;
-            const pullNumber = Number(payload.pr_number);
-            const headSha = String(payload.head_sha || '');
-            const runId = String(payload.run_id || '');
-            const result = String(payload.evaluation_result || '').toLowerCase();
+            const allowedPayloadFields = new Set([
+              'schema_version',
+              'repository',
+              'pr_number',
+              'head_sha',
+              'run_id',
+              'evaluation_result',
+              'counts',
+              'failure_type',
+              'report_url',
+            ]);
+            const unknownPayloadFields = Object.keys(payload).filter(
+              name => !allowedPayloadFields.has(name),
+            );
+            if (unknownPayloadFields.length > 0) {
+              throw new Error(
+                `Result contains unsupported fields: ${unknownPayloadFields.join(', ')}.`,
+              );
+            }
+            if (payload.schema_version !== 1) {
+              throw new Error('Result must use schema_version 1.');
+            }
+
+            const pullNumber = payload.pr_number;
+            const headSha = payload.head_sha;
+            const runId = payload.run_id;
+            const result = payload.evaluation_result;
             const allowedResults = new Set(['passed', 'failed', 'error']);
 
             if (payload.repository !== expectedRepository) {
@@ -41,16 +64,28 @@ jobs:
             if (!/^[0-9a-f]{40}$/.test(headSha)) {
               throw new Error('Result is missing a valid head SHA.');
             }
-            if (!/^\d+$/.test(runId)) {
+            if (typeof runId !== 'string' || !/^\d+$/.test(runId)) {
               throw new Error('Result is missing a numeric Aone run id.');
             }
-            if (!allowedResults.has(result)) {
+            if (typeof result !== 'string' || !allowedResults.has(result)) {
               throw new Error(`Unsupported evaluation result: ${result || '<empty>'}.`);
             }
 
+            const counts = payload.counts;
+            const countFields = ['total', 'passed', 'failed', 'errors', 'skipped'];
+            if (counts === null || typeof counts !== 'object' || Array.isArray(counts)) {
+              throw new Error('Result counts must be an object.');
+            }
+            const countKeys = Object.keys(counts);
+            if (
+              countKeys.length !== countFields.length ||
+              countKeys.some(name => !countFields.includes(name))
+            ) {
+              throw new Error(`Result counts must contain exactly: ${countFields.join(', ')}.`);
+            }
             const count = name => {
-              const value = Number(payload[name]);
-              if (!Number.isSafeInteger(value) || value < 0) {
+              const value = counts[name];
+              if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
                 throw new Error(`Result field ${name} must be a non-negative integer.`);
               }
               return value;
@@ -60,39 +95,14 @@ jobs:
             const failed = count('failed');
             const errors = count('errors');
             const skipped = count('skipped');
-            if (passed + failed + errors + skipped !== total) {
+            const accounted = passed + failed + errors + skipped;
+            if (!Number.isSafeInteger(accounted) || accounted !== total) {
               throw new Error('Result counts do not add up to total.');
             }
-
-            const reportURL = String(payload.report_url || '');
-            if (reportURL) {
-              const parsedURL = new URL(reportURL);
-              if (parsedURL.protocol !== 'https:') {
-                throw new Error('Aone report URL must use HTTPS.');
-              }
+            if (result === 'passed' && (failed !== 0 || errors !== 0)) {
+              throw new Error('A passed result cannot contain failures or errors.');
             }
 
-            const {data: pull} = await github.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: pullNumber,
-            });
-            if (pull.state !== 'open') {
-              core.notice(`PR #${pullNumber} is no longer open; result ignored.`);
-              return;
-            }
-            if (pull.head.sha !== headSha) {
-              core.notice(
-                `Aone result belongs to stale ${headSha}; current PR head is ${pull.head.sha}.`,
-              );
-              return;
-            }
-
-            const labels = {
-              passed: '✅ 通过',
-              failed: '❌ 存在失败',
-              error: '⚠️ 评测基础设施异常',
-            };
             const failureTypes = {
               product_regression: '代码或产品回归',
               test_assertion: '测试断言问题',
@@ -102,10 +112,70 @@ jobs:
               pipeline_infrastructure: 'Pipeline 基础设施问题',
               none: '无',
             };
-            const failureTypeKey = String(payload.failure_type || 'none');
-            const failureType = failureTypes[failureTypeKey] || '未分类';
-            const reportLine = reportURL
-              ? `- [查看完整 Aone 报告](${reportURL})`
+            const failureTypeKey = payload.failure_type;
+            if (
+              typeof failureTypeKey !== 'string' ||
+              !Object.hasOwn(failureTypes, failureTypeKey)
+            ) {
+              throw new Error(`Unsupported failure type: ${failureTypeKey || '<empty>'}.`);
+            }
+            if (result === 'passed' && failureTypeKey !== 'none') {
+              throw new Error('A passed result must use failure_type none.');
+            }
+
+            const reportURL = payload.report_url ?? '';
+            let reportHref = '';
+            if (typeof reportURL !== 'string') {
+              throw new Error('Aone report URL must be a string.');
+            }
+            if (reportURL) {
+              if (reportURL.length > 2048) {
+                throw new Error('Aone report URL must not exceed 2048 characters.');
+              }
+              const parsedURL = new URL(reportURL);
+              if (parsedURL.protocol !== 'https:') {
+                throw new Error('Aone report URL must use HTTPS.');
+              }
+              if (parsedURL.username || parsedURL.password) {
+                throw new Error('Aone report URL must not contain credentials.');
+              }
+              reportHref = parsedURL.href.replace(
+                /[<>]/g,
+                character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+              );
+            }
+
+            async function isCurrentRevision(phase) {
+              const {data: pull} = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber,
+              });
+              if (pull.state !== 'open') {
+                core.notice(`PR #${pullNumber} is no longer open during ${phase}; result ignored.`);
+                return false;
+              }
+              if (pull.head.sha !== headSha) {
+                core.notice(
+                  `Aone result belongs to stale ${headSha}; current PR head is ` +
+                  `${pull.head.sha} during ${phase}.`,
+                );
+                return false;
+              }
+              return true;
+            }
+            if (!(await isCurrentRevision('initial result validation'))) {
+              return;
+            }
+
+            const labels = {
+              passed: '✅ 通过',
+              failed: '❌ 存在失败',
+              error: '⚠️ 评测基础设施异常',
+            };
+            const failureType = failureTypes[failureTypeKey];
+            const reportLine = reportHref
+              ? `- 完整报告：<${reportHref}>`
               : '- 完整报告链接：未提供';
             const body = [
               marker,
@@ -133,6 +203,9 @@ jobs:
               comment.user?.login === 'github-actions[bot]' &&
               comment.body?.includes(marker),
             );
+            if (!(await isCurrentRevision('comment write'))) {
+              return;
+            }
             if (existing) {
               await github.rest.issues.updateComment({
                 owner,
