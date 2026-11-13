@@ -14,9 +14,11 @@
 package cmdpolicy
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
 
@@ -245,6 +247,64 @@ func TestCrossPlatformCoverageEvaluateReportsShadowedDeny(t *testing.T) {
 	}
 }
 
+func TestCrossPlatformCoverageEvaluateDenyMessage(t *testing.T) {
+	agenda := subject{primary: "calendar/+agenda", safety: declared("read", "low")}
+	denyAgenda := edition.CommandRule{Name: "deny-agenda", Deny: []string{"calendar/+agenda"}, DenyMessage: "  请联系 IT 开通日程查询  "}
+	authOnly := edition.CommandRule{Name: "auth-basic", Allow: []string{"auth/login"}, DenyMessage: "auth 规则的指引"}
+	denyAgain := edition.CommandRule{Name: "deny-again", Deny: []string{"calendar/**"}, DenyMessage: "请联系 IT 开通日程查询"}
+	denyOther := edition.CommandRule{Name: "deny-other", Deny: []string{"calendar/+agenda"}, DenyMessage: "工单入口：it.example.com"}
+
+	tests := []struct {
+		name  string
+		rules []edition.CommandRule
+		s     subject
+		want  string
+	}{
+		{"single rule deny, trimmed", []edition.CommandRule{denyAgenda}, agenda, "请联系 IT 开通日程查询"},
+		{"single rule allow miss", []edition.CommandRule{authOnly}, agenda, "auth 规则的指引"},
+		{"several rules: only the Deny match speaks", []edition.CommandRule{authOnly, denyAgenda}, agenda, "请联系 IT 开通日程查询"},
+		{"several rules: none Deny-matched", []edition.CommandRule{authOnly, {Name: "other", Allow: []string{"im/**"}, DenyMessage: "x"}}, agenda, ""},
+		{"several Deny matches are de-duplicated", []edition.CommandRule{denyAgenda, denyAgain}, agenda, "请联系 IT 开通日程查询"},
+		{"several Deny matches keep rule order", []edition.CommandRule{denyAgenda, denyOther}, agenda, "请联系 IT 开通日程查询 工单入口：it.example.com"},
+		{"allowed command carries no message", []edition.CommandRule{denyAgenda}, subject{primary: "calendar/event/list", safety: declared("read", "low")}, ""},
+		{"unnamed channel carries no message", []edition.CommandRule{denyAgenda}, subject{primary: "api"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evaluate(StateActive, tt.rules, tt.s).decision
+			if got.DenyMessage != tt.want {
+				t.Fatalf("DenyMessage = %q, want %q (decision %+v)", got.DenyMessage, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestCrossPlatformCoverageDenialErrorCarriesDenyMessage(t *testing.T) {
+	base := Decision{ReasonCode: ReasonDenylisted, Reason: "r", RuleName: "deny-agenda"}
+	var plain *apperrors.Error
+	if !errors.As(DenialError("calendar/+agenda", base, StateActive), &plain) {
+		t.Fatal("DenialError is not a classified error")
+	}
+	if _, ok := plain.Details["deny_message"]; ok {
+		t.Fatalf("details = %+v, want no deny_message without a configured message", plain.Details)
+	}
+
+	base.DenyMessage = "请联系 IT 开通日程查询"
+	var custom *apperrors.Error
+	if !errors.As(DenialError("calendar/+agenda", base, StateActive), &custom) {
+		t.Fatal("DenialError is not a classified error")
+	}
+	if custom.Details["deny_message"] != base.DenyMessage {
+		t.Fatalf("details = %+v, want deny_message", custom.Details)
+	}
+	if custom.Hint != plain.Hint+". "+base.DenyMessage {
+		t.Fatalf("hint = %q, want the standard hint followed by the deny message", custom.Hint)
+	}
+	if custom.Message != plain.Message || custom.Reason != plain.Reason {
+		t.Fatalf("message/reason changed: %q/%q vs %q/%q", custom.Message, custom.Reason, plain.Message, plain.Reason)
+	}
+}
+
 func TestCrossPlatformCoverageValidateRules(t *testing.T) {
 	valid := []edition.CommandRule{
 		{Name: "a", Allow: []string{"calendar/**", "im/+messages-send"}, Deny: []string{"**/delete"}, MaxEffect: "write", MaxRisk: "high", AllowChannels: []string{"api"}},
@@ -270,6 +330,11 @@ func TestCrossPlatformCoverageValidateRules(t *testing.T) {
 		"path is empty":           {{Name: "a", Allow: []string{""}}},
 		"exact command path":      {{Name: "a", AllowChannels: []string{"plugin/**"}}},
 		"reviewed channel entry":  {{Name: "a", AllowChannels: []string{"calendar/event/list"}}},
+		"control character":       {{Name: "a", DenyMessage: "line one\nline two"}},
+		"longer than 500":         {{Name: "a", DenyMessage: strings.Repeat("字", 501)}},
+	}
+	if err := ValidateRules([]edition.CommandRule{{Name: "a", DenyMessage: strings.Repeat("字", 500)}}); err != nil {
+		t.Fatalf("ValidateRules(500-character deny message) = %v", err)
 	}
 	for want, rules := range invalid {
 		err := ValidateRules(rules)

@@ -45,6 +45,7 @@ edition.Override(&edition.Hooks{
 |---|---|
 | `Name` | 必填，规则集内唯一。出现在诊断输出和拒绝错误里 |
 | `Description` | 仅展示 |
+| `DenyMessage` | 可选。本条规则拒绝命令时附加到拒绝错误的指引，见[自定义拒绝指引](#自定义拒绝指引) |
 | `Allow` | glob 列表。为空表示不限制路径 |
 | `Deny` | glob 列表。仅在本条规则内优先于 `Allow` |
 | `MaxEffect` | effect 上限（含）：`read` < `write` < `destructive`。为空不设上限 |
@@ -219,6 +220,20 @@ dws config policy show --format json
 | `policy_invalid` | 策略非法 |
 
 被拒绝的命令不会触发鉴权、不发起请求。Agent 不应重试。
+
+### 自定义拒绝指引
+
+规则的 `DenyMessage` 用来告诉使用者下一步怎么办，例如找谁开通：
+
+```go
+{Name: "deny-calendar-agenda", Deny: []string{"calendar/+agenda"}, DenyMessage: "日程查询未开放，请联系 IT 开通"}
+```
+
+- 它追加在拒绝错误 `hint` 的末尾，同时写入 `details.deny_message`。`message`、`reason`、`details.reason_code` 和退出码不变，Agent 仍应按这些稳定字段判断。
+- 只有一条规则拒绝该命令时，用这条规则的 `DenyMessage`。
+- 多条规则都拒绝时（`no_matching_rule`），只用 `Deny` 命中该命令的规则的 `DenyMessage`，按规则顺序拼接并去重。仅仅是 `Allow` 没覆盖或上限不满足的规则不参与，所以 `auth-basic` 这类模板规则不会给无关命令附加文案。
+- 通道入口未被点名（`channel_not_allowed`）、策略非法（`policy_invalid`）等与具体规则无关的拒绝不带自定义指引。
+- 内容须为单行纯文本，不超过 500 个字符，不含换行等控制字符；不满足时规则非法，策略进入 `invalid`。
 
 ## 与 lark-cli 的差异
 

@@ -33,6 +33,16 @@ type CommandRule struct {
 	Name string
 	// Description is display-only.
 	Description string
+	// DenyMessage is optional guidance appended to the denial error when this
+	// rule is the reason a command was refused, for example who to contact to
+	// get access. It is one line of plain text, at most 500 characters. It is
+	// added to the error hint and details; the stable message, reason code,
+	// and exit code are unchanged.
+	//
+	// It is used when this is the only rule that denied the command. When
+	// several rules each denied it, only the messages of rules whose Deny
+	// matched the command are used.
+	DenyMessage string
 
 	// Allow restricts the rule to matching command paths. Empty means the rule
 	// applies no path restriction.

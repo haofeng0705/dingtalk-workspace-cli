@@ -193,6 +193,30 @@ func TestCrossPlatformCoverageCommandPolicyDeniedExecution(t *testing.T) {
 	}
 }
 
+func TestCrossPlatformCoverageCommandPolicyDenyMessage(t *testing.T) {
+	const guidance = "请联系 IT 开通日程查询"
+	restrictForTest(t, staticRules(
+		edition.CommandRule{Name: "auth-basic", Allow: []string{"auth/login", "auth/logout", "auth/status"}, AllowUnannotated: true},
+		edition.CommandRule{Name: "deny-calendar-agenda", Deny: []string{"calendar/+agenda"}, AllowUnannotated: true, DenyMessage: guidance},
+	))
+	root := NewRootCommand()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"calendar", "+agenda", "--format", "json"})
+	err := root.Execute()
+	typed := requireDenied(t, err, cmdpolicy.ReasonNoMatchingRule)
+	if typed.Details["deny_message"] != guidance || !strings.HasSuffix(typed.Hint, guidance) {
+		t.Fatalf("denial hint/details = %q / %+v, want the rule's deny message", typed.Hint, typed.Details)
+	}
+	if err := printExecutionError(root, &stdout, &stderr, err); err != nil {
+		t.Fatalf("printExecutionError: %v", err)
+	}
+	if rendered := stdout.String() + stderr.String(); !strings.Contains(rendered, guidance) {
+		t.Fatalf("rendered error does not carry the deny message:\n%s", rendered)
+	}
+}
+
 func TestCrossPlatformCoverageCommandPolicyDeniedJSONError(t *testing.T) {
 	restrictForTest(t, staticRules(edition.CommandRule{Name: "calendar-readonly", Allow: []string{"calendar/**"}, MaxEffect: edition.EffectRead}))
 	root := NewRootCommand()

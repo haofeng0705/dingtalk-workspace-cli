@@ -296,9 +296,16 @@ func DenialError(path string, decision Decision, state State) error {
 	}
 	message := fmt.Sprintf("%s is denied by the command restriction policy (%s): %s",
 		DisplayPath(path), decision.ReasonCode, decision.Reason)
+	hint := "this command is not permitted in this build; run `dws config policy show` to inspect the active rules, and do not retry it"
+	// The distributor's guidance is additive: it never replaces the stable
+	// message, reason code, or the instruction not to retry.
+	if decision.DenyMessage != "" {
+		details["deny_message"] = decision.DenyMessage
+		hint += ". " + decision.DenyMessage
+	}
 	return apperrors.NewValidation(message,
 		apperrors.WithReason("command_denied"),
-		apperrors.WithHint("this command is not permitted in this build; run `dws config policy show` to inspect the active rules, and do not retry it"),
+		apperrors.WithHint(hint),
 		apperrors.WithDetails(details),
 		apperrors.WithRetryable(false),
 	)

@@ -94,7 +94,10 @@ func evaluate(state State, rules []edition.CommandRule, s subject) evaluation {
 // Deny hit independently of the verdict so shadowed Denies can be diagnosed.
 func evaluateRule(rule edition.CommandRule, s subject, channel bool) (verdict Decision, denyMatched bool) {
 	deny := func(code, format string, args ...any) Decision {
-		return Decision{ReasonCode: code, Reason: fmt.Sprintf(format, args...), RuleName: rule.Name}
+		return Decision{
+			ReasonCode: code, Reason: fmt.Sprintf(format, args...),
+			RuleName: rule.Name, DenyMessage: strings.TrimSpace(rule.DenyMessage),
+		}
 	}
 	var denyGlob, denyPath string
 	for _, path := range s.paths() {
@@ -167,7 +170,29 @@ func mergeDenials(denials []Decision, channel bool) Decision {
 	for i, denial := range denials {
 		parts[i] = denial.RuleName + ": " + denial.ReasonCode
 	}
-	return Decision{ReasonCode: ReasonNoMatchingRule, Reason: "no rule allows this command (" + strings.Join(parts, "; ") + ")"}
+	return Decision{
+		ReasonCode:  ReasonNoMatchingRule,
+		Reason:      "no rule allows this command (" + strings.Join(parts, "; ") + ")",
+		DenyMessage: denylistedMessages(denials),
+	}
+}
+
+// denylistedMessages picks the guidance for a command several rules denied.
+// Only a rule whose Deny matched expressed an intent about this command; a
+// rule that merely does not cover it (an unrelated Allow, a ceiling) has
+// nothing to say about it, so its message is left out. Messages keep rule
+// order and are de-duplicated.
+func denylistedMessages(denials []Decision) string {
+	var messages []string
+	seen := make(map[string]bool, len(denials))
+	for _, denial := range denials {
+		if denial.ReasonCode != ReasonDenylisted || denial.DenyMessage == "" || seen[denial.DenyMessage] {
+			continue
+		}
+		seen[denial.DenyMessage] = true
+		messages = append(messages, denial.DenyMessage)
+	}
+	return strings.Join(messages, " ")
 }
 
 func (s subject) paths() []string {

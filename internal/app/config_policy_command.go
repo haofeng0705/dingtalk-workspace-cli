@@ -108,6 +108,7 @@ func configPolicyShowResultSpec() *contract.ResultSpec {
 					"properties":{
 						"name":{"type":"string","description":"规则名，规则集内唯一"},
 						"description":{"type":"string","description":"规则说明，仅展示"},
+						"deny_message":{"type":"string","description":"发行方为本条规则配置的拒绝指引，会附加到拒绝错误的 hint 和 details；未配置时为空"},
 						"allow":{"type":"array","description":"允许的命令路径 glob；为空表示不限制路径","items":{"type":"string"}},
 						"deny":{"type":"array","description":"拒绝的命令路径 glob；仅在本条规则内优先于 allow","items":{"type":"string"}},
 						"max_effect":{"type":"string","description":"effect 上限（含）：read、write、destructive；为空不设上限"},
@@ -115,7 +116,7 @@ func configPolicyShowResultSpec() *contract.ResultSpec {
 						"allow_unannotated":{"type":"boolean","description":"是否放行缺少 effect 或 risk 声明的命令"},
 						"allow_channels":{"type":"array","description":"本条规则点名开放的通道入口精确路径","items":{"type":"string"}}
 					},
-					"required":["name","allow","deny","max_effect","max_risk","allow_unannotated","allow_channels"],
+					"required":["name","deny_message","allow","deny","max_effect","max_risk","allow_unannotated","allow_channels"],
 					"additionalProperties":false
 				}},
 				"denied_count":{"type":"integer","description":"被拒绝的可执行入口数量"},
@@ -171,6 +172,7 @@ func commandPolicyReport(snapshot *cmdpolicy.Snapshot) map[string]any {
 		rules = append(rules, map[string]any{
 			"name":              rule.Name,
 			"description":       rule.Description,
+			"deny_message":      rule.DenyMessage,
 			"allow":             nonNilStrings(rule.Allow),
 			"deny":              nonNilStrings(rule.Deny),
 			"max_effect":        rule.MaxEffect,

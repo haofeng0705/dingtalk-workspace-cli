@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
@@ -72,6 +74,9 @@ type Decision struct {
 	// RuleName is the rule that allowed the command, or the single rule that
 	// denied it. It is empty when several rules each denied it.
 	RuleName string
+	// DenyMessage is the distributor-authored guidance attributed to a denial;
+	// see edition.CommandRule.DenyMessage for which rules contribute.
+	DenyMessage string
 }
 
 // DeniedPath is one denied executable entry, for diagnostics.
@@ -164,6 +169,9 @@ func ValidateRules(rules []edition.CommandRule) error {
 			return fmt.Errorf("rule name %q is declared more than once", rule.Name)
 		}
 		names[rule.Name] = true
+		if err := validateDenyMessage(rule.DenyMessage); err != nil {
+			return fmt.Errorf("rule %q deny message: %w", rule.Name, err)
+		}
 		if rule.MaxEffect != "" {
 			if _, ok := effectRank[rule.MaxEffect]; !ok {
 				return fmt.Errorf("rule %q: max effect %q is not one of read, write, destructive", rule.Name, rule.MaxEffect)
@@ -191,6 +199,24 @@ func ValidateRules(rules []edition.CommandRule) error {
 			if !channelSet[channel] {
 				return fmt.Errorf("rule %q allow channels: %q is not a reviewed channel entry", rule.Name, channel)
 			}
+		}
+	}
+	return nil
+}
+
+// maxDenyMessageRunes bounds CommandRule.DenyMessage so a denial stays one
+// readable line in a terminal and in an Agent's context.
+const maxDenyMessageRunes = 500
+
+// validateDenyMessage rejects text that could not be shown as one plain line:
+// the message is printed to terminals, so control characters are not allowed.
+func validateDenyMessage(message string) error {
+	if utf8.RuneCountInString(message) > maxDenyMessageRunes {
+		return fmt.Errorf("longer than %d characters", maxDenyMessageRunes)
+	}
+	for _, r := range message {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("contains control character %U; use one line of plain text", r)
 		}
 	}
 	return nil
