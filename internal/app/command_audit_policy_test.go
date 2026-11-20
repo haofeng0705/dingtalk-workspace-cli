@@ -6,12 +6,14 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/audit"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cmdpolicy"
+	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/testseam"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
@@ -153,5 +155,66 @@ func TestCrossPlatformCoverageCommandAuditWriteFailurePreservesExitCode(t *testi
 				t.Fatalf("expected audit write failure diagnostic, got: %s, err=%v", raw, err)
 			}
 		})
+	}
+}
+
+func TestCrossPlatformCoverageCommandAuditDisabledSkipsProcessWrite(t *testing.T) {
+	dir := isolateCommandAuditForTest(t)
+	t.Setenv(audit.EnvAudit, "0")
+	restrictForTest(t, staticRules())
+	testseam.Swap(t, &os.Args, []string{"dws", "calendar", "event", "list"})
+	if code, _, _ := ExecuteWithTelemetry(); code != 3 {
+		t.Fatalf("disabled audit changed policy refusal exit to %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "commands")); !os.IsNotExist(err) {
+		t.Fatalf("disabled command audit created a stream: %v", err)
+	}
+}
+
+func TestCrossPlatformCoverageCommandAuditLocalSurfaceSelection(t *testing.T) {
+	root := NewRootCommand()
+	unknown := apperrors.MarkUnknownInvocation(errors.New("unknown subcommand"))
+	for _, tc := range []struct {
+		path string
+		code int
+		err  error
+		want string
+	}{
+		{"schema", 0, nil, ""},
+		{"schema", 3, errors.New("invalid schema query"), "schema"},
+		{"version", 0, nil, ""},
+		{"audit/tail", 0, nil, ""},
+		{"calendar", 0, nil, ""},
+		{"calendar", 3, unknown, "unresolved"},
+		{"dingtalk-tag/connect", 3, unknown, "unresolved"},
+	} {
+		cmd := findPolicyCommand(t, root, tc.path)
+		if got := commandAuditSurface(cmd, cmdpolicy.CommandPath(cmd), tc.code, tc.err, cmdpolicy.Observation{}); got != tc.want {
+			t.Errorf("%s exit %d: surface=%q, want %q", tc.path, tc.code, got, tc.want)
+		}
+	}
+}
+
+// 自定义错误的 Unwrap 可能由扩展实现。观察者自身分类出错时，不能影响已经裁决的命令结果。
+type panicUnwrapAuditError struct {
+	called bool
+}
+
+func (*panicUnwrapAuditError) Error() string { return "external error" }
+
+func (e *panicUnwrapAuditError) Unwrap() error {
+	e.called = true
+	panic("broken external error")
+}
+
+func TestCrossPlatformCoverageCommandAuditSurvivesErrorProjectionPanic(t *testing.T) {
+	dir := isolateCommandAuditForTest(t)
+	cause := &panicUnwrapAuditError{}
+	newCommandAudit().afterCommand(nil, nil, 5, cause)
+	if !cause.called {
+		t.Fatal("observer did not classify the terminal error")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "commands")); !os.IsNotExist(err) {
+		t.Fatalf("observer published an incomplete event: %v", err)
 	}
 }

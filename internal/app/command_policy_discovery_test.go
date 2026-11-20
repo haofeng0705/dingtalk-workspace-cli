@@ -25,6 +25,7 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cmdpolicy"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -67,6 +68,28 @@ func TestCrossPlatformCoverageCommandPolicyObservers(t *testing.T) {
 				t.Errorf("dws %v: err=%v observed=%+v, want success=%t observations=%+v", tt.args, err, seen, tt.success, tt.want)
 			}
 		})
+	}
+}
+
+// 发行版允许一个只在运行时存在的入口。产品在可执行树中可见，但交付的 Schema 没有可见工具。
+func TestCrossPlatformCoverageCommandAuditSchemaProjectionDenial(t *testing.T) {
+	restrictForTest(t, staticRules(edition.CommandRule{
+		Name: "local", Allow: []string{"calendar/distribution-only"}, AllowUnannotated: true,
+	}))
+	var observed []cmdpolicy.Observation
+	ctx := cmdpolicy.WithObserver(t.Context(), func(o cmdpolicy.Observation) { observed = append(observed, o) })
+	root := newRootCommandWithAssembly(ctx, nil, func(root *cobra.Command) {
+		findPolicyCommand(t, root, "calendar").AddCommand(&cobra.Command{
+			Use: "distribution-only", Run: func(*cobra.Command, []string) {},
+		})
+	})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"schema", "calendar"})
+	requireDenied(t, root.Execute(), cmdpolicy.ReasonAllChildrenDenied)
+	want := []cmdpolicy.Observation{{Surface: "schema", TargetPath: "calendar", ReasonCode: cmdpolicy.ReasonAllChildrenDenied}}
+	if !slices.Equal(observed, want) {
+		t.Fatalf("observed %+v, want %+v", observed, want)
 	}
 }
 

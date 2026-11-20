@@ -6,6 +6,7 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -138,6 +139,22 @@ func TestCrossPlatformCoverageCommandRecordSize(t *testing.T) {
 	var event CommandEvent
 	if err := json.Unmarshal(first, &event); err != nil || !slices.Equal(event.ToolExecutionIDs, large.ToolExecutionIDs) {
 		t.Fatalf("tool IDs were not preserved, count=%d err=%v", len(event.ToolExecutionIDs), err)
+	}
+}
+
+func TestCrossPlatformCoverageCommandUnencodableTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvAudit, "1")
+	t.Setenv(EnvAuditDir, dir)
+
+	// RFC 3339 的年份只有四位，Go 的 time.Time 可以表示范围外的值。
+	event := &CommandEvent{Timestamp: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}
+	var marshalErr *json.MarshalerError
+	if err := WriteCommand(dir, event); !errors.As(err, &marshalErr) {
+		t.Fatalf("invalid audit timestamp: got %v, want marshal error", err)
+	}
+	if _, err := os.Stat(CommandDir(dir)); !os.IsNotExist(err) {
+		t.Fatalf("failed encoding created the command stream directory: %v", err)
 	}
 }
 
