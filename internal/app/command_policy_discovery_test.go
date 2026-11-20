@@ -14,8 +14,11 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,6 +32,42 @@ import (
 // which is reachable through both "report entry submit" and "report create".
 func reportReadOnlyRules() func() []edition.CommandRule {
 	return staticRules(edition.CommandRule{Name: "report-readonly", Allow: []string{"report/**"}, MaxEffect: edition.EffectRead})
+}
+
+func TestCrossPlatformCoverageCommandPolicyObservers(t *testing.T) {
+	restrictForTest(t, reportReadOnlyRules())
+	rule := "report-readonly"
+	cases := []struct {
+		name    string
+		args    []string
+		want    []cmdpolicy.Observation
+		success bool
+	}{
+		{"execute", []string{"report", "entry", "submit"}, []cmdpolicy.Observation{{Surface: "execute", TargetPath: "report/entry/submit", ReasonCode: cmdpolicy.ReasonRiskTooHigh, RuleName: rule}}, false},
+		{"compatibility entry", []string{"report", "create", "--help"}, []cmdpolicy.Observation{{Surface: "execute", TargetPath: "report/create", ReasonCode: cmdpolicy.ReasonRiskTooHigh, RuleName: rule}}, false},
+		{"hybrid gate", []string{"dingtalk-tag", "connect"}, []cmdpolicy.Observation{{Surface: "execute", TargetPath: "dingtalk-tag/connect", ReasonCode: cmdpolicy.ReasonNotAllowed, RuleName: rule}}, false},
+		{"exact help", []string{"help", "report", "entry", "submit"}, []cmdpolicy.Observation{{Surface: "help", TargetPath: "report/entry/submit", ReasonCode: cmdpolicy.ReasonRiskTooHigh, RuleName: rule}}, false},
+		{"help flag on denied group", []string{"calendar", "--help"}, []cmdpolicy.Observation{{Surface: "help", TargetPath: "calendar", ReasonCode: cmdpolicy.ReasonAllChildrenDenied}}, true},
+		{"ordinary help", []string{"report", "entry", "get", "--help"}, []cmdpolicy.Observation{{Surface: "help"}}, true},
+		{"schema leaf", []string{"schema", "--cli-path", "report entry submit", "--compact"}, []cmdpolicy.Observation{{Surface: "schema", TargetPath: "report/entry/submit", ReasonCode: cmdpolicy.ReasonRiskTooHigh, RuleName: rule}}, false},
+		{"schema group", []string{"schema", "calendar"}, []cmdpolicy.Observation{{Surface: "schema", TargetPath: "calendar", ReasonCode: cmdpolicy.ReasonAllChildrenDenied}}, false},
+		{"schema list", []string{"schema", "list"}, nil, true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var seen []cmdpolicy.Observation
+			root := NewRootCommand(cmdpolicy.WithObserver(context.Background(), func(observation cmdpolicy.Observation) {
+				seen = append(seen, observation)
+			}))
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs(tt.args)
+			err := root.Execute()
+			if (err == nil) != tt.success || !slices.Equal(tt.want, seen) {
+				t.Errorf("dws %v: err=%v observed=%+v, want success=%t observations=%+v", tt.args, err, seen, tt.success, tt.want)
+			}
+		})
+	}
 }
 
 func schemaJSON(t *testing.T, args ...string) map[string]any {

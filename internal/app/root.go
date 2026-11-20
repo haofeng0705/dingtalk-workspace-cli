@@ -109,9 +109,14 @@ func ExecuteWithTelemetry() (exitCode int, commandPath string, errorMessage stri
 		root        *cobra.Command
 		executed    *cobra.Command
 		resultStore *output.ResultStore
+		auditTarget *cobra.Command
+		err         error
 	)
+	commandAudit := newCommandAudit()
+	defer CloseFileLogger()
 	defer func() {
 		if r := recover(); r != nil {
+			err = errCommandPanic
 			errorMessage = "internal panic"
 			target := executed
 			if target == nil && root != nil {
@@ -143,9 +148,9 @@ func ExecuteWithTelemetry() (exitCode int, commandPath string, errorMessage stri
 				executed = target
 			}
 		}
-		CloseFileLogger()
 		if executed != nil {
-			if err := closeOutputSink(executed); err != nil {
+			if closeErr := closeOutputSink(executed); closeErr != nil {
+				err = closeErr
 				errorMessage = telemetryErrorSummary(err)
 				if code, handled, emitErr := emitOutputPublicationFailure(executed, err); handled && emitErr == nil {
 					exitCode = code
@@ -158,6 +163,10 @@ func ExecuteWithTelemetry() (exitCode int, commandPath string, errorMessage stri
 				}
 			}
 		}
+		if executed != nil {
+			auditTarget = executed
+		}
+		commandAudit.afterCommand(root, auditTarget, exitCode, err)
 	}()
 	restoreArgs := rootNormalizeProcessProfileArgs()
 	defer restoreArgs()
@@ -167,7 +176,7 @@ func ExecuteWithTelemetry() (exitCode int, commandPath string, errorMessage stri
 	// plugin PreParse handlers, so PersistentPreRunE alone is too late for the
 	// process entry point. Retain this exact pair for the eventual invocation.
 	agentMetadata := readAgentMetadataSnapshot()
-	if err := agentMetadata.validationError(); err != nil {
+	if err = agentMetadata.validationError(); err != nil {
 		emitEarlyAgentMetadataValidationError(err, os.Args[1:])
 		errorMessage = telemetryErrorSummary(err)
 		exitCode = apperrors.ExitCode(err)
@@ -186,7 +195,7 @@ func ExecuteWithTelemetry() (exitCode int, commandPath string, errorMessage stri
 	}()
 
 	// Attach timing collector to context for use by child components
-	ctx := WithTimingCollector(context.Background(), timing)
+	ctx := WithTimingCollector(commandAudit.withContext(context.Background()), timing)
 	ctx = context.WithValue(ctx, versionCheckArgsKey{}, append([]string(nil), os.Args[1:]...))
 	ctx = context.WithValue(ctx, authStatusProcessStartupKey{}, true)
 	ctx = contextWithAgentMetadataSnapshot(ctx, agentMetadata)
@@ -208,14 +217,17 @@ func ExecuteWithTelemetry() (exitCode int, commandPath string, errorMessage stri
 	preParseStart := time.Now()
 	preParseErr := rootRunPreParse(root, engine)
 	timing.Record("preparse", time.Since(preParseStart))
-	if err := preParseErr; err != nil {
-		err = newPreParseValidationError(err)
+	if preParseErr != nil {
+		err = newPreParseValidationError(preParseErr)
 		if interrupted, _ := signalState.Outcome(); interrupted != nil {
 			err = interrupted
 		}
 		notice := unknownInvocationNotice(root, err)
-		if target, _, findErr := root.Find(os.Args[1:]); findErr == nil && target != nil && output.UsesUnifiedResult(target) {
-			code, emitErr := emitFailureWithVersionNotice(target, err, notice)
+		if target, _, findErr := root.Find(os.Args[1:]); findErr == nil {
+			auditTarget = target
+		}
+		if auditTarget != nil && output.UsesUnifiedResult(auditTarget) {
+			code, emitErr := emitFailureWithVersionNotice(auditTarget, err, notice)
 			if emitErr == nil {
 				errorMessage = telemetryErrorSummary(err)
 				exitCode = code
@@ -229,9 +241,9 @@ func ExecuteWithTelemetry() (exitCode int, commandPath string, errorMessage stri
 	}
 	commandPath = telemetryCommandPathForArgs(root, os.Args[1:])
 
-	var err error
 	executeStart := time.Now()
 	executed, err = rootExecuteCommand(root)
+	commandAudit.endDispatch()
 	timing.Record("command_execute", time.Since(executeStart))
 	if executed != nil {
 		commandPath = telemetryCommandPath(executed)

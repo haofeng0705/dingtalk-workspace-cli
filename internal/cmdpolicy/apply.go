@@ -103,7 +103,9 @@ func Apply(root *cobra.Command, snapshot *Snapshot) {
 
 func installDenial(item *entry, decision Decision, state State) {
 	path := item.path
-	deny := func(*cobra.Command, []string) error { return DenialError(path, decision, state) }
+	deny := func(cmd *cobra.Command, _ []string) error {
+		return Observe(cmd, SurfaceExecute, DenialError(path, decision, state))
+	}
 	switch item.kind {
 	case kindHybrid:
 		corecmd.DenyGroupBusiness(item.cmd, deny)
@@ -260,7 +262,7 @@ func Gate(cmd *cobra.Command, args []string) error {
 		// subcommand, not the group's business operation.
 		return nil
 	}
-	return DenialError(path, decision, snapshot.state)
+	return Observe(cmd, SurfaceExecute, DenialError(path, decision, snapshot.state))
 }
 
 // DiscoveryDenial returns the denial that hides path from discovery surfaces

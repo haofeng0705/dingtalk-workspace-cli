@@ -107,30 +107,30 @@ func TestCrossPlatformCoverageAuditCommandsAndFileHelpersCoverage(t *testing.T) 
 		t.Fatalf("audit export(missing dir) error = %v", err)
 	}
 
-	if err := exportJSONL([]string{filepath.Join(dir, "missing")}); err == nil {
+	if err := exportJSONL([]string{filepath.Join(dir, "missing")}, os.Stdout); err == nil {
 		t.Fatal("exportJSONL(missing) error = nil")
 	}
-	if err := exportJSONL([]string{oversize}); err == nil {
+	if err := exportJSONL([]string{oversize}, os.Stdout); err == nil {
 		t.Fatal("exportJSONL(oversize) error = nil")
 	}
-	if err := exportCSV([]string{filepath.Join(dir, "missing")}); err == nil {
+	if err := exportCSV([]string{filepath.Join(dir, "missing")}, auditToolStream, os.Stdout); err == nil {
 		t.Fatal("exportCSV(missing) error = nil")
 	}
 	blank := filepath.Join(dir, "blank")
 	if err := os.WriteFile(blank, []byte("\n \n{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := exportCSV([]string{blank}); err != nil {
+	if err := exportCSV([]string{blank}, auditToolStream, os.Stdout); err != nil {
 		t.Fatal(err)
 	}
-	if err := exportCSV([]string{oversize}); err == nil {
+	if err := exportCSV([]string{oversize}, auditToolStream, os.Stdout); err == nil {
 		t.Fatal("exportCSV(oversize) error = nil")
 	}
 
 	originalWrite, originalFlush, originalError := auditCSVWrite, auditCSVFlush, auditCSVError
 	t.Cleanup(func() { auditCSVWrite, auditCSVFlush, auditCSVError = originalWrite, originalFlush, originalError })
 	auditCSVWrite = func(*csv.Writer, []string) error { return errors.New("write") }
-	if err := exportCSV(nil); err == nil || !strings.Contains(err.Error(), "表头") {
+	if err := exportCSV(nil, auditToolStream, os.Stdout); err == nil || !strings.Contains(err.Error(), "表头") {
 		t.Fatalf("exportCSV(header error) = %v", err)
 	}
 	calls := 0
@@ -141,12 +141,12 @@ func TestCrossPlatformCoverageAuditCommandsAndFileHelpersCoverage(t *testing.T) 
 		}
 		return originalWrite(writer, row)
 	}
-	if err := exportCSV([]string{blank}); err == nil || !strings.Contains(err.Error(), "记录") {
+	if err := exportCSV([]string{blank}, auditToolStream, os.Stdout); err == nil || !strings.Contains(err.Error(), "记录") {
 		t.Fatalf("exportCSV(row error) = %v", err)
 	}
 	auditCSVWrite = originalWrite
 	auditCSVError = func(*csv.Writer) error { return errors.New("flush") }
-	if err := exportCSV(nil); err == nil || !strings.Contains(err.Error(), "刷新") {
+	if err := exportCSV(nil, auditToolStream, os.Stdout); err == nil || !strings.Contains(err.Error(), "刷新") {
 		t.Fatalf("exportCSV(flush error) = %v", err)
 	}
 

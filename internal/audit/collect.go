@@ -93,6 +93,23 @@ func IsEnabled() bool {
 	return true
 }
 
+// Dir returns the configured directory used by the audit readers and writers.
+func Dir(configDir string) string {
+	if dir := os.Getenv(EnvAuditDir); dir != "" {
+		return dir
+	}
+	return filepath.Join(configDir, auditSubdir)
+}
+
+func retentionDays() int {
+	if v := os.Getenv(EnvRetentionDays); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return defaultRetentionDays
+}
+
 // BuildSink constructs the audit sink for configDir. It returns an error when
 // the audit subsystem is enabled but cannot initialize (e.g. the log directory
 // is not writable) so the caller can surface the failure instead of silently
@@ -101,20 +118,8 @@ func BuildSink(configDir string, report func(format string, args ...any)) (Sink,
 	if !IsEnabled() {
 		return NopSink{}, nil
 	}
-
-	dir := os.Getenv(EnvAuditDir)
-	if dir == "" {
-		dir = filepath.Join(configDir, auditSubdir)
-	}
-
-	retention := defaultRetentionDays
-	if v := os.Getenv(EnvRetentionDays); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			retention = n
-		}
-	}
-
-	writer, err := NewDateRotatingWriter(dir, retention)
+	dir := Dir(configDir)
+	writer, err := NewDateRotatingWriter(dir, retentionDays())
 	if err != nil {
 		return NopSink{}, err
 	}

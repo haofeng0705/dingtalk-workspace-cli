@@ -231,6 +231,7 @@ func TestOutputSinkUnifiedPublicationFailureFailsAndLeavesNoFinalFile(t *testing
 }
 
 func TestCrossPlatformCoverageExecuteUnifiedPublicationFailureEmitsFailureOnOriginalStdout(t *testing.T) {
+	auditDir := isolateCommandAuditForTest(t)
 	testseam.Protect(t, &os.Args)
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -264,9 +265,11 @@ func TestCrossPlatformCoverageExecuteUnifiedPublicationFailureEmitsFailureOnOrig
 		return root
 	})
 
-	if code := Execute(); code != 5 {
+	code := Execute()
+	if code != 5 {
 		t.Fatalf("Execute exit code=%d, want publication failure code 5; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
+	assertCommandAuditFailure(t, auditDir, code, "internal", "output_publication_failed")
 	var envelope output.Envelope
 	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
 		t.Fatalf("publication failure stdout=%q: %v; stderr=%q", stdout.String(), err, stderr.String())

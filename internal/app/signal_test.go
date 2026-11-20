@@ -350,6 +350,8 @@ func TestCrossPlatformCoverageSignalAfterCompletedPrimaryPreservesEstablishedOut
 
 func TestCrossPlatformCoverageExecuteSignalSubprocessExitStatus(t *testing.T) {
 	if os.Getenv("DWS_SIGNAL_HELPER") == "1" {
+		// TestMain 为每个进程创建默认审计目录。使用父进程预留的目录以便其在 wait 后核对记录。
+		t.Setenv("DWS_AUDIT_DIR", os.Getenv("DWS_SIGNAL_HELPER_AUDIT_DIR"))
 		installSignalExecuteSeams(t, true, os.Stdout, os.Stderr)
 		testseam.Swap(t, &rootExecuteCommand, func(cmd *cobra.Command) (*cobra.Command, error) {
 			_, _ = fmt.Fprintln(os.Stderr, "READY")
@@ -369,8 +371,9 @@ func TestCrossPlatformCoverageExecuteSignalSubprocessExitStatus(t *testing.T) {
 		{name: "SIGTERM", signal: syscall.SIGTERM, code: 143, subtype: "terminated"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			auditDir := t.TempDir()
 			cmd := exec.Command(os.Args[0], "-test.run=^TestCrossPlatformCoverageExecuteSignalSubprocessExitStatus$")
-			cmd.Env = append(os.Environ(), "DWS_SIGNAL_HELPER=1")
+			cmd.Env = append(os.Environ(), "DWS_SIGNAL_HELPER=1", "DWS_SIGNAL_HELPER_AUDIT_DIR="+auditDir)
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
 				t.Fatal(err)
@@ -406,6 +409,7 @@ func TestCrossPlatformCoverageExecuteSignalSubprocessExitStatus(t *testing.T) {
 			if env.Error == nil || env.Error.Subtype != tc.subtype || env.Error.ExitCode != tc.code {
 				t.Fatalf("helper error=%+v", env.Error)
 			}
+			assertCommandAuditFailure(t, auditDir, exitErr.ExitCode(), env.Error.Type, env.Error.Subtype)
 		})
 	}
 }

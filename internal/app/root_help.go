@@ -47,7 +47,7 @@ func configureRootHelp(root *cobra.Command) {
 			// denies, or a group with no permitted command, reports the
 			// denial instead of its usage and flags.
 			if denial := cmdpolicy.DiscoveryDenial(cmdpolicy.For(target), cmdpolicy.CommandPath(target)); denial != nil {
-				return denial
+				return cmdpolicy.Observe(c, cmdpolicy.SurfaceHelp, denial)
 			}
 			target.InitDefaultHelpFlag()
 			_ = target.Help()
@@ -57,13 +57,13 @@ func configureRootHelp(root *cobra.Command) {
 
 	defaultHelpFunc := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		// --help 可以在 RunE 前返回，并且此回调没有错误返回值。
+		denial := cmdpolicy.DiscoveryDenial(cmdpolicy.For(cmd), cmdpolicy.CommandPath(cmd))
+		if cmdpolicy.Observe(cmd, cmdpolicy.SurfaceHelp, denial) != nil {
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), denial.Error())
+			return
+		}
 		if cmd != root {
-			// The --help flag reaches this function without running RunE, so
-			// the same discovery rule is applied here.
-			if denial := cmdpolicy.DiscoveryDenial(cmdpolicy.For(cmd), cmdpolicy.CommandPath(cmd)); denial != nil {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), denial.Error())
-				return
-			}
 			if isChatProductRoot(cmd, root) {
 				renderChatShortcutFirstHelp(cmd)
 				cli.RenderHelpAffordances(cmd)

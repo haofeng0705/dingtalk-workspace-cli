@@ -202,6 +202,27 @@ dws config policy show --format json
 | `deny_overridden` | 某命令被一条规则的 `Deny` 命中，却被另一条规则放行 |
 | `rule_allows_all` | 某条规则既无 `Allow` 也无上限，放行全部已声明的非通道命令 |
 
+## 指令审计
+
+CLI 在一次业务指令收尾后写一条本地命令记录。记录包含规范化命令路径、耗时、最终退出码及这次调用的策略判决。工具已返回成功后，输出文件发布仍可能失败。此时命令记录反映最终失败，`tool_execution_ids` 可用于联查已经写入的工具记录。
+
+| 操作 | 记录中的关键信息 |
+|---|---|
+| 在单条 `calendar-readonly` 规则（`MaxEffect=read`）下执行 `calendar event delete` | `surface=execute`、`policy.decision=deny`、`policy.reason_code=risk_too_high`、退出 3 |
+| 用 `help` 或 `schema` 定向查询同一指令 | `surface=help` 或 `schema`，`policy.target_path=calendar/event/delete` |
+| 用 `--help` 查看整个被裁剪的导航分组 | 可同时出现 `policy.decision=deny` 和退出 0，表示帮助内容被隐藏 |
+| 执行 `config policy show` | `surface=policy_inspect`，记录诊断时的策略状态 |
+
+策略判决来自当前命令树。记录中的 `policy.view_hash` 可与同一构建的 Schema 规则指纹对照，`rule_name` 在判决能归属到单一规则时出现。成功浏览帮助、Schema 列表或补全不会累计业务拒绝次数。原始参数、规则提示全文和凭证均不进入命令记录。
+
+```bash
+dws audit tail --stream command --lines 20
+dws audit export --stream command --format jsonl | jq -c 'select(.surface == "execute" and .policy.decision == "deny")'
+dws audit verify --stream command
+```
+
+命令记录写入审计目录下的 `commands/audit-YYYYMMDD.jsonl`，使用独立的按日哈希链，只保存在本地。两种记录共用 `DWS_AUDIT`、`DWS_AUDIT_DIR` 和 `DWS_AUDIT_RETENTION_DAYS`。省略 `--stream` 时读取工具记录。读取命令本身也受发行版的策略控制。无法正常收尾的强制终止和本机写入失败可能没有记录。
+
 ## 拒绝错误
 
 被拒绝的命令返回 validation 类错误，退出码 3，`reason` 为 `command_denied`，`details.reason_code` 给出具体原因：

@@ -139,8 +139,9 @@ func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 		line := scanner.Bytes()
 
 		var evt struct {
-			PrevHash string `json:"prev_hash"`
-			Hash     string `json:"hash"`
+			EventType string `json:"event_type"`
+			PrevHash  string `json:"prev_hash"`
+			Hash      string `json:"hash"`
 		}
 		if err := json.Unmarshal(line, &evt); err != nil {
 			return false, lineNum, fmt.Errorf("line %d: invalid JSON: %w", lineNum, err)
@@ -150,13 +151,20 @@ func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 			return false, lineNum, fmt.Errorf("line %d: prev_hash mismatch", lineNum)
 		}
 
-		body := stripHashFields(line)
-		h := sha256.New()
-		h.Write([]byte(prevHash))
-		h.Write(body)
-		expected := hex.EncodeToString(h.Sum(nil))
-
-		if evt.Hash != expected {
+		var body []byte
+		switch evt.EventType {
+		case "":
+			body = stripHashFields(line)
+		case CommandFinished:
+			var err error
+			body, err = commandHashBody(line)
+			if err != nil {
+				return false, lineNum, fmt.Errorf("line %d: invalid command event: %w", lineNum, err)
+			}
+		default:
+			return false, lineNum, fmt.Errorf("line %d: unsupported audit event type", lineNum)
+		}
+		if evt.Hash != ComputeHash(prevHash, body) {
 			return false, lineNum, fmt.Errorf("line %d: hash mismatch", lineNum)
 		}
 

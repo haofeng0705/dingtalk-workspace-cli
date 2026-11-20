@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,6 +29,16 @@ var (
 	auditExit     = os.Exit
 	auditVerify   = audit.VerifyFile
 )
+
+const (
+	auditToolStream    = "tool"
+	auditCommandStream = "command"
+	auditStreamUsage   = "审计流：tool（工具调用）或 command（命令执行与裁剪策略）"
+)
+
+func auditStreamParam() []contract.ParamDecl {
+	return []contract.ParamDecl{{Name: "stream", Enum: []string{auditToolStream, auditCommandStream}}}
+}
 
 func newAuditCommand() *cobra.Command {
 	// Product-level Agent routing Decl (migrated from selection/audit.json
@@ -65,6 +76,7 @@ func newAuditCommand() *cobra.Command {
 
 func newAuditTailCommand() *cobra.Command {
 	var n int
+	var stream string
 	cmd := &cobra.Command{
 		Use:   "tail",
 		Short: "查看最近的审计记录",
@@ -75,7 +87,10 @@ func newAuditTailCommand() *cobra.Command {
 					apperrors.WithReason("invalid_flag_value"),
 				)
 			}
-			dir := auditDir()
+			dir, err := auditStreamDir(stream)
+			if err != nil {
+				return err
+			}
 			file, err := audit.LatestAuditFile(dir)
 			if err != nil {
 				return fmt.Errorf("无审计记录: %w", err)
@@ -85,12 +100,15 @@ func newAuditTailCommand() *cobra.Command {
 				return err
 			}
 			for _, line := range lines {
-				fmt.Println(line)
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), line); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().IntVarP(&n, "lines", "n", 20, "显示最近 N 条记录")
+	cmd.Flags().StringVar(&stream, "stream", auditToolStream, auditStreamUsage)
 	helpers.DeclareLeafMetadata(cmd, helpers.LeafSpec{
 		Safety: contract.SafetySpec{
 			Effect: "read", Risk: "low",
@@ -105,6 +123,7 @@ func newAuditTailCommand() *cobra.Command {
 				PrimaryCLIPath: "audit tail",
 			},
 			Description: "查看本地操作审计日志最近 N 条记录",
+			Parameters:  auditStreamParam(),
 			Interface: &contract.InterfaceSpec{
 				Mode:         "local",
 				Availability: "available",
@@ -119,7 +138,7 @@ func newAuditTailCommand() *cobra.Command {
 				},
 				Examples: []string{
 					"dws audit tail",
-					"dws audit tail --lines 50",
+					"dws audit tail --stream command --lines 50",
 				},
 			},
 		},
@@ -128,12 +147,15 @@ func newAuditTailCommand() *cobra.Command {
 }
 
 func newAuditExportCommand() *cobra.Command {
-	var since, until, format string
+	var since, until, format, stream string
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "导出审计日志",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir := auditDir()
+			dir, err := auditStreamDir(stream)
+			if err != nil {
+				return err
+			}
 
 			sinceDate := strings.ReplaceAll(since, "-", "")
 			untilDate := strings.ReplaceAll(until, "-", "")
@@ -148,9 +170,9 @@ func newAuditExportCommand() *cobra.Command {
 
 			switch format {
 			case "jsonl":
-				return exportJSONL(files)
+				return exportJSONL(files, cmd.OutOrStdout())
 			case "csv":
-				return exportCSV(files)
+				return exportCSV(files, stream, cmd.OutOrStdout())
 			default:
 				return fmt.Errorf("不支持的格式: %s（可选 jsonl, csv）", format)
 			}
@@ -159,6 +181,7 @@ func newAuditExportCommand() *cobra.Command {
 	cmd.Flags().StringVar(&since, "since", "", "起始日期 (YYYY-MM-DD)")
 	cmd.Flags().StringVar(&until, "until", "", "截止日期 (YYYY-MM-DD)")
 	cmd.Flags().StringVar(&format, "format", "jsonl", "输出格式: jsonl 或 csv")
+	cmd.Flags().StringVar(&stream, "stream", auditToolStream, auditStreamUsage)
 	helpers.DeclareLeafMetadata(cmd, helpers.LeafSpec{
 		Safety: contract.SafetySpec{
 			Effect: "read", Risk: "low",
@@ -173,6 +196,7 @@ func newAuditExportCommand() *cobra.Command {
 				PrimaryCLIPath: "audit export",
 			},
 			Description: "按日期范围导出本地操作审计日志（jsonl 或 csv）",
+			Parameters:  auditStreamParam(),
 			Interface: &contract.InterfaceSpec{
 				Mode:         "local",
 				Availability: "available",
@@ -187,7 +211,7 @@ func newAuditExportCommand() *cobra.Command {
 				},
 				Examples: []string{
 					"dws audit export --format jsonl",
-					"dws audit export --since 2026-07-01 --until 2026-07-14 --format csv",
+					"dws audit export --stream command --since 2026-07-01 --until 2026-07-14 --format csv",
 				},
 			},
 		},
@@ -196,15 +220,17 @@ func newAuditExportCommand() *cobra.Command {
 }
 
 func newAuditVerifyCommand() *cobra.Command {
-	var file string
+	var file, stream string
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "校验审计日志哈希链完整性",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, err := auditStreamDir(stream)
+			if err != nil {
+				return err
+			}
 			target := file
 			if target == "" {
-				dir := auditDir()
-				var err error
 				target, err = audit.LatestAuditFile(dir)
 				if err != nil {
 					return fmt.Errorf("无审计文件: %w", err)
@@ -236,15 +262,16 @@ func newAuditVerifyCommand() *cobra.Command {
 				return fmt.Errorf("校验失败: %w", verifyErr)
 			}
 			if valid {
-				fmt.Printf("✓ %s 哈希链完整（全部通过）\n", filepath.Base(target))
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "✓ %s 哈希链完整（全部通过）\n", filepath.Base(target))
 			} else {
-				fmt.Printf("✗ %s 哈希链在第 %d 行断裂\n", filepath.Base(target), brokenAt)
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "✗ %s 哈希链在第 %d 行断裂\n", filepath.Base(target), brokenAt)
 				auditExit(1)
 			}
-			return nil
+			return err
 		},
 	}
-	cmd.Flags().StringVar(&file, "file", "", "指定审计文件路径（默认最新文件）")
+	cmd.Flags().StringVar(&file, "file", "", "指定审计文件路径（默认取所选审计流的最新文件）")
+	cmd.Flags().StringVar(&stream, "stream", auditToolStream, auditStreamUsage)
 	helpers.DeclareLeafMetadata(cmd, helpers.LeafSpec{
 		Safety: contract.SafetySpec{
 			Effect: "read", Risk: "low",
@@ -259,6 +286,7 @@ func newAuditVerifyCommand() *cobra.Command {
 				PrimaryCLIPath: "audit verify",
 			},
 			Description: "校验本地审计日志文件的哈希链完整性",
+			Parameters:  auditStreamParam(),
 			Interface: &contract.InterfaceSpec{
 				Mode:         "local",
 				Availability: "available",
@@ -279,10 +307,18 @@ func newAuditVerifyCommand() *cobra.Command {
 }
 
 func auditDir() string {
-	if dir := os.Getenv(audit.EnvAuditDir); dir != "" {
-		return dir
+	return audit.Dir(defaultConfigDir())
+}
+
+func auditStreamDir(stream string) (string, error) {
+	switch stream {
+	case auditToolStream:
+		return auditDir(), nil
+	case auditCommandStream:
+		return audit.CommandDir(defaultConfigDir()), nil
+	default:
+		return "", apperrors.NewValidation("--stream 必须为 tool 或 command", apperrors.WithReason("invalid_flag_value"))
 	}
-	return filepath.Join(defaultConfigDir(), "audit")
 }
 
 func tailFile(path string, n int) ([]string, error) {
@@ -308,7 +344,7 @@ func tailFile(path string, n int) ([]string, error) {
 	return lines, nil
 }
 
-func exportJSONL(files []string) error {
+func exportJSONL(files []string, out io.Writer) error {
 	for _, file := range files {
 		f, err := os.Open(file)
 		if err != nil {
@@ -317,7 +353,10 @@ func exportJSONL(files []string) error {
 		scanner := bufio.NewScanner(f)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
-			fmt.Println(scanner.Text())
+			if _, err := fmt.Fprintln(out, scanner.Text()); err != nil {
+				f.Close()
+				return err
+			}
 		}
 		f.Close()
 		if err := scanner.Err(); err != nil {
@@ -327,10 +366,19 @@ func exportJSONL(files []string) error {
 	return nil
 }
 
-func exportCSV(files []string) error {
-	w := csv.NewWriter(os.Stdout)
+func exportCSV(files []string, stream string, out io.Writer) error {
+	w := csv.NewWriter(out)
 
 	header := []string{"timestamp", "execution_id", "user_id", "corp_id", "product", "command", "result", "duration_ms", "error_category"}
+	record := toolCSVRecord
+	if stream == auditCommandStream {
+		header = []string{
+			"ts", "command_id", "command_path", "surface", "result", "exit_code", "duration_ms", "cli_version",
+			"error_category", "error_reason", "policy_state", "policy_source", "policy_view_hash", "policy_decision",
+			"policy_target_path", "policy_rule_name", "policy_reason_code", "tool_execution_ids",
+		}
+		record = commandCSVRecord
+	}
 	if err := auditCSVWrite(w, header); err != nil {
 		return fmt.Errorf("写入 CSV 表头失败: %w", err)
 	}
@@ -349,21 +397,10 @@ func exportCSV(files []string) error {
 			if len(bytes.TrimSpace(line)) == 0 {
 				continue
 			}
-			var evt audit.Event
-			if err := json.Unmarshal(line, &evt); err != nil {
+			row, err := record(line)
+			if err != nil {
 				f.Close()
 				return fmt.Errorf("解析审计记录失败 %s:%d: %w", file, lineNum, err)
-			}
-			row := []string{
-				evt.Timestamp.Format(time.RFC3339),
-				evt.ExecutionID,
-				evt.Actor.UserID,
-				evt.Actor.CorpID,
-				evt.Product,
-				evt.Command,
-				evt.Result,
-				strconv.FormatInt(evt.DurationMs, 10),
-				evt.ErrCategory,
 			}
 			if err := auditCSVWrite(w, row); err != nil {
 				f.Close()
@@ -382,4 +419,34 @@ func exportCSV(files []string) error {
 		return fmt.Errorf("刷新 CSV 输出失败: %w", err)
 	}
 	return nil
+}
+
+func toolCSVRecord(line []byte) ([]string, error) {
+	var evt audit.Event
+	if err := json.Unmarshal(line, &evt); err != nil {
+		return nil, err
+	}
+	return []string{
+		evt.Timestamp.Format(time.RFC3339), evt.ExecutionID, evt.Actor.UserID, evt.Actor.CorpID,
+		evt.Product, evt.Command, evt.Result, strconv.FormatInt(evt.DurationMs, 10), evt.ErrCategory,
+	}, nil
+}
+
+func commandCSVRecord(line []byte) ([]string, error) {
+	var evt audit.CommandEvent
+	if err := json.Unmarshal(line, &evt); err != nil {
+		return nil, err
+	}
+	policy := evt.Policy
+	if policy == nil {
+		policy = &audit.CommandPolicy{}
+	}
+	// []string 只含 JSON 可表示的值。保留数组，以便 CSV 消费方逐个关联工具记录。
+	ids, _ := json.Marshal(evt.ToolExecutionIDs)
+	return []string{
+		evt.Timestamp.Format(time.RFC3339Nano), evt.CommandID, evt.CommandPath, evt.Surface,
+		evt.Result, strconv.Itoa(evt.ExitCode), strconv.FormatInt(evt.DurationMs, 10), evt.CLIVersion,
+		evt.ErrCategory, evt.ErrReason, policy.State, policy.Source, policy.ViewHash, policy.Decision,
+		policy.TargetPath, policy.RuleName, policy.ReasonCode, string(ids),
+	}, nil
 }

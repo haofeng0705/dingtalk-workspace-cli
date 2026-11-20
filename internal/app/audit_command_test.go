@@ -54,7 +54,7 @@ func TestExportCSVWritesHeaderAndRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	exportErr := exportCSV([]string{path})
+	exportErr := exportCSV([]string{path}, auditToolStream, os.Stdout)
 	w.Close()
 	os.Stdout = stdout
 
@@ -89,7 +89,7 @@ func TestExportCSVFailsOnMalformedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	exportErr := exportCSV([]string{path})
+	exportErr := exportCSV([]string{path}, auditToolStream, os.Stdout)
 	w.Close()
 	os.Stdout = stdout
 	// Drain the pipe so the writer never blocks.
