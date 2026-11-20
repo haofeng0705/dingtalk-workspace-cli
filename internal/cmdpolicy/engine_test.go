@@ -20,7 +20,16 @@ import (
 
 	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
+	"github.com/spf13/cobra"
 )
+
+func TestCrossPlatformCoveragePolicyObserveWithoutHost(t *testing.T) {
+	cmd := &cobra.Command{Use: "standalone"}
+	denial := DenialError("standalone", Decision{ReasonCode: ReasonNotAllowed}, StateActive)
+	if got := Observe(cmd, SurfaceExecute, denial); got != denial {
+		t.Fatalf("standalone command lost original denial: %v", got)
+	}
+}
 
 func declared(effect, risk string) safetyFacts { return safetyFacts{effect: effect, risk: risk} }
 

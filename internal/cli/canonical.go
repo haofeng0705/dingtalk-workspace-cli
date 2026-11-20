@@ -109,7 +109,7 @@ func NewSchemaCommand() *cobra.Command {
 			policy := cmdpolicy.For(cmd)
 			if !all && len(args) == 1 {
 				if err := schemaPolicyQueryDenial(policy, args[0]); err != nil {
-					return err
+					return cmdpolicy.Observe(cmd, cmdpolicy.SurfaceSchema, err)
 				}
 			}
 			if !all && compact && len(args) == 1 &&
@@ -141,7 +141,7 @@ func NewSchemaCommand() *cobra.Command {
 				return err
 			}
 			if payload, err = schemaPolicyView(policy, payload, deliverySchemaAllPayload); err != nil {
-				return err
+				return cmdpolicy.Observe(cmd, cmdpolicy.SurfaceSchema, err)
 			}
 			if compact {
 				payload = stripSchemaPayloadCompact(payload)

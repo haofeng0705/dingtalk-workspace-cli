@@ -182,6 +182,7 @@ func TestPublicRootDirectExecuteClosesSinkOnHandlerError(t *testing.T) {
 }
 
 func TestCrossPlatformCoverageExecutePanicAfterEmissionPreservesSingleResultAndExitCode(t *testing.T) {
+	auditDir := isolateCommandAuditForTest(t)
 	oldNormalize := rootNormalizeProcessProfileArgs
 	oldExecute := rootExecuteCommand
 	oldNewRoot := rootNewRootCommandWithEngine
@@ -220,9 +221,11 @@ func TestCrossPlatformCoverageExecutePanicAfterEmissionPreservesSingleResultAndE
 		panic("after emission")
 	}
 
-	if code := Execute(); code != 3 {
+	code := Execute()
+	if code != 3 {
 		t.Fatalf("Execute code=%d, want emitted validation code 3", code)
 	}
+	assertCommandAuditFailure(t, auditDir, code, "validation", "")
 	if got := strings.Count(stdout.String(), `"outcome": "failure"`); got != 1 {
 		t.Fatalf("stdout contains %d envelopes, want one: %s", got, stdout.String())
 	}

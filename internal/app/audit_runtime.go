@@ -160,6 +160,10 @@ func emitAudit(ctx context.Context, sink audit.Sink, execID string, invokeStart 
 
 	if err := sink.Emit(evt); err != nil {
 		auditReport("emit event failed (exec %s): %v", execID, err)
+	} else if ctx != nil {
+		if command, ok := ctx.Value(commandAuditKey{}).(*commandAudit); ok {
+			command.recordTool(execID)
+		}
 	}
 }
 

@@ -99,8 +99,7 @@ func lastRecordHashFullScan(f *os.File) (string, error) {
 	if _, err := chainSeek(f, 0, io.SeekStart); err != nil {
 		return "", err
 	}
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	scanner := NewRecordScanner(f)
 	var last []byte
 	for scanner.Scan() {
 		if b := scanner.Bytes(); len(b) > 0 {
@@ -122,6 +121,16 @@ func lastRecordHashFullScan(f *os.File) (string, error) {
 	return rec.Hash, nil
 }
 
+// MaxRecordBytes is the per-line wire limit including the trailing newline.
+const MaxRecordBytes = 8 * 1024 * 1024
+
+// NewRecordScanner applies the same limit to chain verification, tail and export.
+func NewRecordScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), MaxRecordBytes)
+	return scanner
+}
+
 func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -129,8 +138,7 @@ func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	scanner := NewRecordScanner(f)
 
 	prevHash := ""
 	lineNum := 0
@@ -139,8 +147,9 @@ func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 		line := scanner.Bytes()
 
 		var evt struct {
-			PrevHash string `json:"prev_hash"`
-			Hash     string `json:"hash"`
+			EventType string `json:"event_type"`
+			PrevHash  string `json:"prev_hash"`
+			Hash      string `json:"hash"`
 		}
 		if err := json.Unmarshal(line, &evt); err != nil {
 			return false, lineNum, fmt.Errorf("line %d: invalid JSON: %w", lineNum, err)
@@ -150,13 +159,20 @@ func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 			return false, lineNum, fmt.Errorf("line %d: prev_hash mismatch", lineNum)
 		}
 
-		body := stripHashFields(line)
-		h := sha256.New()
-		h.Write([]byte(prevHash))
-		h.Write(body)
-		expected := hex.EncodeToString(h.Sum(nil))
-
-		if evt.Hash != expected {
+		var body []byte
+		switch evt.EventType {
+		case "":
+			body = stripHashFields(line)
+		case CommandFinished:
+			var err error
+			body, err = commandHashBody(line, evt.PrevHash, evt.Hash)
+			if err != nil {
+				return false, lineNum, fmt.Errorf("line %d: invalid command event: %w", lineNum, err)
+			}
+		default:
+			return false, lineNum, fmt.Errorf("line %d: unsupported audit event type", lineNum)
+		}
+		if evt.Hash != ComputeHash(prevHash, body) {
 			return false, lineNum, fmt.Errorf("line %d: hash mismatch", lineNum)
 		}
 

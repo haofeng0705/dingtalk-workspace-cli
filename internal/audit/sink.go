@@ -43,37 +43,36 @@ func (s *FileSink) Emit(evt *Event) error {
 		return fmt.Errorf("audit: marshal event: %w", err)
 	}
 
-	f, release, err := s.writer.beginAppend()
+	err = appendSealed(s.writer, s.chain, body, func(prevHash, hash string) ([]byte, error) {
+		evt.PrevHash, evt.Hash = prevHash, hash
+		return sinkMarshal(evt)
+	})
+	if err == nil && s.forwarder != nil {
+		s.forwarder.Forward(*evt)
+	}
+	return err
+}
+
+// appendSealed holds the same lock across reading the tail and appending the
+// new record, for both the tool stream and the independent command stream.
+func appendSealed(writer *DateRotatingWriter, chain *Chain, body []byte, encode func(prevHash, hash string) ([]byte, error)) error {
+	f, release, err := writer.beginAppend()
 	if err != nil {
 		return fmt.Errorf("audit: acquire writer: %w", err)
 	}
-
-	// Derive prev_hash from the file tail, seal, and append — all under the
-	// writer's process + inter-process lock so the chain cannot fork.
-	prevHash, hash, err := s.chain.SealFromFile(f, body)
+	defer release()
+	prevHash, hash, err := chain.SealFromFile(f, body)
 	if err != nil {
-		release()
 		return fmt.Errorf("audit: seal event: %w", err)
 	}
-	evt.PrevHash = prevHash
-	evt.Hash = hash
-
-	line, err := sinkMarshal(evt)
+	line, err := encode(prevHash, hash)
 	if err != nil {
-		release()
 		return fmt.Errorf("audit: marshal final event: %w", err)
 	}
 	line = append(line, '\n')
 	if _, err := sinkWrite(f, line); err != nil {
-		release()
 		return fmt.Errorf("audit: write event: %w", err)
 	}
-	release()
-
-	if s.forwarder != nil {
-		s.forwarder.Forward(*evt)
-	}
-
 	return nil
 }
 
