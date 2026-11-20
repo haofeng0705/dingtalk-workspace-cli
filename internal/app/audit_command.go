@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
@@ -329,8 +328,7 @@ func tailFile(path string, n int) ([]string, error) {
 	defer f.Close()
 
 	var lines []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner := audit.NewRecordScanner(f)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
@@ -350,8 +348,7 @@ func exportJSONL(files []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		scanner := audit.NewRecordScanner(f)
 		for scanner.Scan() {
 			if _, err := fmt.Fprintln(out, scanner.Text()); err != nil {
 				f.Close()
@@ -388,8 +385,7 @@ func exportCSV(files []string, stream string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		scanner := audit.NewRecordScanner(f)
 		lineNum := 0
 		for scanner.Scan() {
 			lineNum++

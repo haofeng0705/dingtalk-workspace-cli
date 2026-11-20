@@ -99,8 +99,7 @@ func lastRecordHashFullScan(f *os.File) (string, error) {
 	if _, err := chainSeek(f, 0, io.SeekStart); err != nil {
 		return "", err
 	}
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	scanner := NewRecordScanner(f)
 	var last []byte
 	for scanner.Scan() {
 		if b := scanner.Bytes(); len(b) > 0 {
@@ -122,6 +121,16 @@ func lastRecordHashFullScan(f *os.File) (string, error) {
 	return rec.Hash, nil
 }
 
+// MaxRecordBytes is the per-line wire limit including the trailing newline.
+const MaxRecordBytes = 8 * 1024 * 1024
+
+// NewRecordScanner applies the same limit to chain verification, tail and export.
+func NewRecordScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), MaxRecordBytes)
+	return scanner
+}
+
 func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -129,8 +138,7 @@ func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+	scanner := NewRecordScanner(f)
 
 	prevHash := ""
 	lineNum := 0
@@ -157,7 +165,7 @@ func VerifyFile(path string) (valid bool, brokenAt int, err error) {
 			body = stripHashFields(line)
 		case CommandFinished:
 			var err error
-			body, err = commandHashBody(line)
+			body, err = commandHashBody(line, evt.PrevHash, evt.Hash)
 			if err != nil {
 				return false, lineNum, fmt.Errorf("line %d: invalid command event: %w", lineNum, err)
 			}

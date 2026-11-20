@@ -221,7 +221,9 @@ dws audit export --stream command --format jsonl | jq -c 'select(.surface == "ex
 dws audit verify --stream command
 ```
 
-命令记录写入审计目录下的 `commands/audit-YYYYMMDD.jsonl`，使用独立的按日哈希链，只保存在本地。两种记录共用 `DWS_AUDIT`、`DWS_AUDIT_DIR` 和 `DWS_AUDIT_RETENTION_DAYS`。省略 `--stream` 时读取工具记录。读取命令本身也受发行版的策略控制。无法正常收尾的强制终止和本机写入失败可能没有记录。
+命令记录写入审计目录下的 `commands/audit-YYYYMMDD.jsonl`，使用独立的按日哈希链，只保存在本地。两种记录共用 `DWS_AUDIT`、`DWS_AUDIT_DIR` 和 `DWS_AUDIT_RETENTION_DAYS`。省略 `--stream` 时读取工具记录。读取命令本身也受发行版的策略控制。
+
+单条命令记录含换行的上限为 8 MiB。超限或磁盘不可写时，CLI 报告审计写入失败，保留命令原本的退出码。可设置 `DWS_AUDIT_DEBUG=1` 查看标准错误上的审计诊断。强制终止进程可能跳过收尾记录。
 
 ## 拒绝错误
 

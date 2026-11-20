@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -79,6 +81,9 @@ func TestCrossPlatformCoverageCommandStreamIndependentAndLocal(t *testing.T) {
 		{`"exit_code":0,`, ""},
 		{`"tool_execution_ids":[]`, `"tool_execution_ids":["unexpected"]`},
 		{`"surface":`, `"extra":"unexpected","surface":`},
+		{`"exit_code":0`, `"exit_code":9,"exit_code":0`},
+		{`"decision":"deny"`, `"decision":"allow","decision":"deny"`},
+		{`"prev_hash":"",`, ""},
 		{"command.finished", "other"},
 	} {
 		tampered := bytes.Replace(raw, []byte(change[0]), []byte(change[1]), 1)
@@ -95,6 +100,44 @@ func TestCrossPlatformCoverageCommandStreamIndependentAndLocal(t *testing.T) {
 	}
 	if valid, at, err := VerifyFile(old); !valid || err != nil {
 		t.Fatalf("legacy chain: %v at %d: %v", valid, at, err)
+	}
+}
+
+func TestCrossPlatformCoverageCommandRecordSize(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvAudit, "1")
+	t.Setenv(EnvAuditDir, dir)
+
+	large := &CommandEvent{CommandID: "large", ToolExecutionIDs: slices.Repeat([]string{"0123456789abcdef"}, 60000)}
+	if err := WriteCommand(dir, large); err != nil {
+		t.Fatal(err)
+	}
+	path, err := LatestAuditFile(CommandDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= 1024*1024 {
+		t.Fatalf("expected record larger than 1 MiB: stat=%v err=%v", info, err)
+	}
+	oversize := &CommandEvent{CommandID: strings.Repeat("x", MaxRecordBytes)}
+	if err := WriteCommand(dir, oversize); err == nil {
+		t.Fatal("oversize event should fail before append")
+	}
+	if err := WriteCommand(dir, &CommandEvent{CommandID: "next"}); err != nil {
+		t.Fatal(err)
+	}
+	if valid, line, err := VerifyFile(path); !valid || err != nil {
+		t.Fatalf("verify line=%d err=%v", line, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || bytes.Count(data, []byte{'\n'}) != 2 {
+		t.Fatalf("expected two records after rejected append: %v", err)
+	}
+	first, _, _ := bytes.Cut(data, []byte{'\n'})
+	var event CommandEvent
+	if err := json.Unmarshal(first, &event); err != nil || !slices.Equal(event.ToolExecutionIDs, large.ToolExecutionIDs) {
+		t.Fatalf("tool IDs were not preserved, count=%d err=%v", len(event.ToolExecutionIDs), err)
 	}
 }
 

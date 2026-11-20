@@ -174,3 +174,25 @@ func TestCrossPlatformCoverageAuditStreamContract(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossPlatformCoverageAuditStreamLargeRecord(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("DWS_CONFIG_DIR", configDir)
+	t.Setenv("DWS_KEYCHAIN_DIR", t.TempDir())
+	t.Setenv(audit.EnvAuditDir, t.TempDir())
+	t.Setenv(audit.EnvAudit, "1")
+	// 一次命令的多条工具引用可以使一行超过以前的 1 MiB 读取上限。
+	ids := slices.Repeat([]string{"1fb83802-3ebb-47b4-8cf3-b2343dbc7daa"}, 28000)
+	if err := audit.WriteCommand(configDir, &audit.CommandEvent{
+		CommandID: "large-record", Surface: "execute", Result: "success", ToolExecutionIDs: ids,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"tail"}, {"export", "--format", "jsonl"}, {"export", "--format", "csv"}} {
+		args = append(args, "--stream", "command")
+		out, err := executePolicyRoot(t, append([]string{"audit"}, args...)...)
+		if err != nil || !strings.Contains(out, "large-record") || strings.Count(out, ids[0]) != len(ids) {
+			t.Fatalf("audit %v read %d bytes: %v", args, len(out), err)
+		}
+	}
+}

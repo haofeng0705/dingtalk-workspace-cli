@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,13 +57,9 @@ func WriteCommand(configDir string, event *CommandEvent) (err error) {
 	if record.ToolExecutionIDs == nil {
 		record.ToolExecutionIDs = []string{}
 	}
-	raw, err := json.Marshal(record)
+	body, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("audit: marshal command: %w", err)
-	}
-	body, err := commandHashBody(raw)
-	if err != nil {
-		return err
 	}
 
 	dir := CommandDir(configDir)
@@ -72,23 +69,31 @@ func WriteCommand(configDir string, event *CommandEvent) (err error) {
 	}
 	defer func() { err = errors.Join(err, writer.Close()) }()
 	return appendSealed(writer, NewChain(dir), body, func(prevHash, hash string) ([]byte, error) {
-		return json.Marshal(struct {
-			CommandEvent
-			PrevHash string `json:"prev_hash"`
-			Hash     string `json:"hash"`
-		}{record, prevHash, hash})
+		// body 由上面的 Marshal 生成。用尾部封印替换右括号，换行也计入读取上限。
+		suffix := commandSealSuffix(prevHash, hash)
+		if len(body)+len(suffix) > MaxRecordBytes {
+			return nil, fmt.Errorf("command event exceeds %d bytes", MaxRecordBytes)
+		}
+		return append(body[:len(body)-1], suffix...), nil
 	})
 }
 
-// Hash all persisted command fields, including explicit zero and empty values
-// and future fields. Using the same projection on read and write keeps new
-// command fields covered without changing the legacy tool projection.
-func commandHashBody(raw []byte) ([]byte, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, err
+// 命令流将两个哈希字段固定放在末尾。保留原始正文字节能覆盖字段顺序、
+// 显式零值和将来增加的字段，并防止 JSON 解码器合并重复键后漏检改动。
+func commandSealSuffix(prevHash, hash string) []byte {
+	seal, _ := json.Marshal(struct {
+		PrevHash string `json:"prev_hash"`
+		Hash     string `json:"hash"`
+	}{prevHash, hash})
+	seal[0] = ','
+	return seal
+}
+
+func commandHashBody(raw []byte, prevHash, hash string) ([]byte, error) {
+	body, ok := bytes.CutSuffix(raw, commandSealSuffix(prevHash, hash))
+	if !ok {
+		return nil, errors.New("missing or noncanonical command seal")
 	}
-	delete(fields, "prev_hash")
-	delete(fields, "hash")
-	return json.Marshal(fields)
+	// 原始记录已解析，校验器仅消费 body。本行不再使用时可复用扫描缓冲区。
+	return append(body, '}'), nil
 }

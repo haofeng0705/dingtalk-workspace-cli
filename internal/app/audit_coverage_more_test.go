@@ -73,7 +73,7 @@ func TestCrossPlatformCoverageAuditCommandsAndFileHelpersCoverage(t *testing.T) 
 		t.Fatalf("audit tail(directory record) error was relabeled as validation: %v", err)
 	}
 	oversize := filepath.Join(dir, "oversize")
-	if err := os.WriteFile(oversize, []byte(strings.Repeat("x", 2*1024*1024)), 0o600); err != nil {
+	if err := os.WriteFile(oversize, []byte(strings.Repeat("x", audit.MaxRecordBytes+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tailFile(oversize, 1); err == nil {
